@@ -16,7 +16,7 @@ import tempfile
 import urllib.request
 import uuid
 
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 DATABASE_URL = 'https://raw.githubusercontent.com/Moonholder/Wuwa_Mod_Fixer/main/config.json'
 HEX = re.compile(r'^[0-9a-fA-F]{8}$')
 DB_HASH = re.compile(r'^(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{16})$')

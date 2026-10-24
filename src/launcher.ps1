@@ -1,9 +1,28 @@
 $ErrorActionPreference = 'Stop'
 $exitCode = 2
 $transcriptStarted = $false
+$runLock = $null
+$lockHeld = $false
 $root = Split-Path -Parent $env:KIRIFIX_SELF
 Set-Location -LiteralPath $root
+function Assert-LocalPath([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    while ($null -ne $item) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw ('Linked paths are not supported: ' + $item.FullName)
+        }
+        $parent = Split-Path -Parent $item.FullName
+        if (!$parent -or $parent -eq $item.FullName) { break }
+        $item = Get-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue
+    }
+}
 try {
+    $runLock = [Threading.Mutex]::new($false, 'Local\KiriFix-WWMI')
+    try { $lockHeld = $runLock.WaitOne(0) } catch [Threading.AbandonedMutexException] { $lockHeld = $true }
+    if (!$lockHeld) { throw 'KiriFix WWMI is already running in this Windows session.' }
+    foreach ($relative in @('', 'logs', 'data', 'data\moonholder.json', 'data\moonholder.source.json', 'reports', 'backups', '.runtime', '.runtime\kirifix.py')) {
+        Assert-LocalPath (Join-Path $root $relative)
+    }
     $logDir = Join-Path $root 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     $runId = (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)
@@ -13,7 +32,7 @@ try {
     Get-ChildItem -LiteralPath $logDir -Filter 'run-*.log' -File |
         Sort-Object Name -Descending | Select-Object -Skip 3 |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
-    Write-Host 'KiriFix WWMI 0.2.0'
+    Write-Host 'KiriFix WWMI 0.2.1'
     Write-Host ('Started: ' + (Get-Date -Format o))
     Write-Host ('Log: ' + $logPath)
     $mode = $env:KIRIFIX_MODE
@@ -40,7 +59,7 @@ try {
     if (Test-Path -LiteralPath $bundled) { $candidates += @{ Path = $bundled; Prefix = @() } }
     foreach ($candidate in $candidates) {
         Write-Host ('Checking Python: ' + $candidate.Path)
-        $probeArgs = @($candidate.Prefix) + @('-c','import sys; print(sys.version); sys.exit(0 if sys.version_info >= (3,10) else 1)')
+        $probeArgs = @($candidate.Prefix) + @('-I','-c','import sys; print(sys.version); sys.exit(0 if sys.version_info >= (3,10) else 1)')
         try {
             $ErrorActionPreference = 'Continue'
             & $candidate.Path @probeArgs 2>&1 | ForEach-Object { Write-Host $_.ToString() }
@@ -59,7 +78,7 @@ try {
 __PYTHON_SOURCE__
 '@
     [IO.File]::WriteAllText($pythonPath, $pythonSource, [Text.UTF8Encoding]::new($false))
-    $arguments = $runtimeArgs + @('-u',$pythonPath,$mode,$mods)
+    $arguments = $runtimeArgs + @('-I','-u',$pythonPath,$mode,$mods)
     if ($mode -eq 'rollback') {
         if ([string]::IsNullOrWhiteSpace($env:KIRIFIX_JOURNAL)) { throw 'Rollback requires journal path as third argument.' }
         $arguments += $env:KIRIFIX_JOURNAL
@@ -80,5 +99,7 @@ __PYTHON_SOURCE__
         Write-Host ('Saved log: ' + $logPath)
         Stop-Transcript | Out-Null
     }
+    if ($lockHeld) { $runLock.ReleaseMutex() }
+    if ($null -ne $runLock) { $runLock.Dispose() }
 }
 exit $exitCode

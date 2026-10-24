@@ -3,7 +3,7 @@
 An experimental one-click Wuthering Waves mod texture repair helper using
 Moonholder's database, with backups, rollback and logs.
 
-Version: **0.2.0 — Experimental**. This project is independent of Moonholder and Caverabbit.
+Version: **0.2.1 — Experimental**. This project is independent of Moonholder and Caverabbit.
 
 ## Requirements
 
@@ -37,6 +37,13 @@ Do not run multiple instances or edit mod files during a run.
 Logs can contain your Windows username, computer name and local paths.
 Do not publish logs, backups or mod files without reviewing them.
 The helper does not upload them. Network requests download the official database.
+
+The CMD launcher uses Python isolated mode to prevent imports from the extracted
+script directory and Python environment overrides. It rejects existing linked
+service paths and allows only one CMD instance per Windows session. These checks
+do not protect against an attacker who can modify the CMD itself or actively
+change its folder during execution. Safety failures before logging starts are
+shown in the console. Run from a trusted, writable folder without administrator rights.
 
 ## Scan and rollback
 
