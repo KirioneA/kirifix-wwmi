@@ -3,6 +3,8 @@
 An experimental one-click Wuthering Waves mod texture repair helper using
 Moonholder's database, with backups, rollback and logs.
 
+Created and maintained by **Kiri1**.
+
 Version: **0.2.1 — Experimental**. This project is independent of Moonholder and Caverabbit.
 
 ## Requirements
@@ -83,13 +85,13 @@ The build creates `dist/KiriFix-WWMI.cmd` from readable source files.
 The release archive should contain the CMD, this README, LICENSE and THIRD_PARTY.md.
 The database and other third-party software are not bundled.
 
-## Credits, licensing and AI disclosure
+## Credits and licensing
 
 Known repair data comes from [Moonholder / Wuwa_Mod_Fixer](https://github.com/Moonholder/Wuwa_Mod_Fixer).
 RabbitFX is by [Caverabbit](https://gamebanana.com/mods/527815).
 See [THIRD_PARTY.md](THIRD_PARTY.md) for dependency licensing information.
 The helper's original code is provided under the MIT License.
 
-The code was generated with AI assistance, including substantial implementation,
-design and documentation work. Requirements and manual testing were supplied by the project owner.
+Project direction, feature decisions and in-game testing by Kiri1.
+AI tools were used for code generation, review and documentation.
 This is a testing release and does not claim universal compatibility.
