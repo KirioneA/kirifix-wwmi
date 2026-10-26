@@ -165,6 +165,12 @@ class FileTests(unittest.TestCase):
         (off / 'mod.ini').write_bytes(INI.encode())
         self.assertEqual(len(h.scan(self.root, DB)), 1)
 
+    def test_service_folder_not_scanned(self):
+        service = self.root / 'Logs-KiriFix'
+        service.mkdir()
+        (service / 'old.ini').write_bytes(INI.encode())
+        self.assertEqual(len(h.scan(self.root, DB)), 1)
+
     def test_missing_local_resource_skips_binding(self):
         (self.mod.parent / 'Textures' / 'Body.dds').unlink()
         p = h.scan(self.root, DB)[0]

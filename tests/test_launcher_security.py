@@ -23,8 +23,9 @@ class LauncherSecurityTests(unittest.TestCase):
         self.cmd.write_bytes((ROOT / 'dist/KiriFix-WWMI.cmd').read_bytes())
         self.mods = self.folder / 'Mods'
         self.mods.mkdir()
-        (self.folder / 'data').mkdir()
-        (self.folder / 'data/moonholder.json').write_text(json.dumps({
+        self.service = self.folder / 'Logs-KiriFix'
+        (self.service / 'data').mkdir(parents=True)
+        (self.service / 'data/moonholder.json').write_text(json.dumps({
             'characters': {'Test': {'main_hashes': [{'new': '11111111'}]}},
             'version': {'current_version': '3.7.1'}}))
 
@@ -37,7 +38,7 @@ class LauncherSecurityTests(unittest.TestCase):
                               env=env, capture_output=True, text=True, timeout=40)
 
     def test_local_python_module_cannot_execute(self):
-        runtime = self.folder / '.runtime'
+        runtime = self.service / '.runtime'
         runtime.mkdir()
         marker = self.folder / 'imported.txt'
         (runtime / 'json.py').write_text(
@@ -51,7 +52,7 @@ class LauncherSecurityTests(unittest.TestCase):
         outside = self.folder / 'outside'
         outside.mkdir()
         env = os.environ.copy()
-        env['LINK_PATH'] = str(self.folder / '.runtime')
+        env['LINK_PATH'] = str(self.service / '.runtime')
         env['LINK_TARGET'] = str(outside)
         subprocess.run(['powershell.exe', '-NoProfile', '-Command',
                         'New-Item -ItemType Junction -Path $env:LINK_PATH -Target $env:LINK_TARGET | Out-Null'],
@@ -65,3 +66,14 @@ class LauncherSecurityTests(unittest.TestCase):
         result = self.launch(prefix)
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn('already running', result.stdout)
+
+    def test_default_scan_uses_script_folder_and_groups_service_files(self):
+        result = subprocess.run(f'"{os.environ["COMSPEC"]}" /d /s /c ""{self.cmd}" "" scan"',
+                                capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        reports = list((self.service / 'reports').glob('*/report.json'))
+        self.assertEqual(len(reports), 1)
+        self.assertIn(f'Mods: {self.folder}', result.stdout)
+        self.assertTrue(list(self.service.glob('run-*.log')))
+        self.assertEqual({p.name for p in self.folder.iterdir()},
+                         {'KiriFix-WWMI.cmd', 'Mods', 'Logs-KiriFix'})

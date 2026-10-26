@@ -8,3 +8,5 @@ backups/
 dist/
 *.log
 *.bak
+Logs-KiriFix/
+*.zip

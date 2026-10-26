@@ -5,7 +5,7 @@ Moonholder's database, with backups, rollback and logs.
 
 Created and maintained by **Kiri1**.
 
-Version: **0.2.1 — Experimental**. This project is independent of Moonholder and Caverabbit.
+Version: **0.2.2 — Experimental**. This project is independent of Moonholder and Caverabbit.
 
 ## Requirements
 
@@ -16,12 +16,13 @@ Version: **0.2.1 — Experimental**. This project is independent of Moonholder a
 
 ## Run
 
-Extract the release archive into a writable folder outside Mods. Close the game,
-then double-click `KiriFix-WWMI.cmd`. It updates the database and applies unambiguous
+Place `KiriFix-WWMI.cmd` directly inside the Mods folder you want to repair. Close the game,
+then double-click it. It updates the database and applies unambiguous
 known texture fixes automatically, without confirmation prompts.
 
-The default Mods directory is `%APPDATA%\XXMI Launcher\WWMI\Mods`.
-Drag another Mods folder onto the CMD file to override it.
+The default target is the folder containing the CMD file, including its subfolders.
+It does not search AppData or scan other drives. Drag another Mods folder onto the
+CMD file to override the target. Keep a single CMD copy in your chosen Mods root.
 
 The installed game version is not detected. Review the results in game.
 Do not run multiple instances or edit mod files during a run.
@@ -30,11 +31,15 @@ Do not run multiple instances or edit mod files during a run.
 
 | Folder | Contents |
 | --- | --- |
-| `logs/` | Output and errors from the last three launches, including failed launches |
-| `backups/` | Original INI bytes and recovery journals; never automatically deleted |
-| `reports/` | Proposed changes, warnings and diffs |
-| `data/` | Downloaded database and source metadata |
-| `.runtime/` | Python source extracted from the CMD |
+| `Logs-KiriFix/run-*.log` | Output and errors from the last three launches |
+| `Logs-KiriFix/backups/` | Original INI bytes and recovery journals; never automatically deleted |
+| `Logs-KiriFix/reports/` | Proposed changes, warnings and diffs |
+| `Logs-KiriFix/data/` | Downloaded database and source metadata |
+| `Logs-KiriFix/.runtime/` | Python source extracted from the CMD |
+
+Only the CMD and one `Logs-KiriFix` service folder are needed in Mods. The service
+folder is excluded from scanning. Existing backups and service folders from older
+versions are not moved or deleted automatically; keep old backups for rollback.
 
 Logs can contain your Windows username, computer name and local paths.
 Do not publish logs, backups or mod files without reviewing them.
@@ -51,7 +56,7 @@ shown in the console. Run from a trusted, writable folder without administrator 
 
 ```bat
 "KiriFix-WWMI.cmd" "D:\WWMI\Mods" scan
-"KiriFix-WWMI.cmd" "D:\WWMI\Mods" rollback "backups\RUN-ID\journal.json"
+"KiriFix-WWMI.cmd" "D:\WWMI\Mods" rollback "D:\WWMI\Mods\Logs-KiriFix\backups\RUN-ID\journal.json"
 ```
 
 Scan mode does not download the database or modify mods; an existing database cache

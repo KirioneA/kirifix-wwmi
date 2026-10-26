@@ -16,7 +16,7 @@ import tempfile
 import urllib.request
 import uuid
 
-VERSION = '0.2.1'
+VERSION = '0.2.2'
 DATABASE_URL = 'https://raw.githubusercontent.com/Moonholder/Wuwa_Mod_Fixer/main/config.json'
 HEX = re.compile(r'^[0-9a-fA-F]{8}$')
 DB_HASH = re.compile(r'^(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{16})$')
@@ -244,7 +244,7 @@ def inside(root: Path, relative: str) -> Path:
 
 def ini_files(root: Path):
     for directory, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(d for d in dirs if not d.lower().startswith(('disabled', '.')) and not is_link(Path(directory) / d))
+        dirs[:] = sorted(d for d in dirs if d.lower() != 'logs-kirifix' and not d.lower().startswith(('disabled', '.')) and not is_link(Path(directory) / d))
         for name in sorted(files):
             if name.lower().endswith('.ini') and not name.lower().startswith('disabled'):
                 path = Path(directory) / name

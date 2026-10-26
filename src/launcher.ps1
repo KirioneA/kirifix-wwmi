@@ -3,8 +3,9 @@ $exitCode = 2
 $transcriptStarted = $false
 $runLock = $null
 $lockHeld = $false
-$root = Split-Path -Parent $env:KIRIFIX_SELF
-Set-Location -LiteralPath $root
+$scriptRoot = Split-Path -Parent $env:KIRIFIX_SELF
+$root = Join-Path $scriptRoot 'Logs-KiriFix'
+Set-Location -LiteralPath $scriptRoot
 function Assert-LocalPath([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     while ($null -ne $item) {
@@ -20,10 +21,11 @@ try {
     $runLock = [Threading.Mutex]::new($false, 'Local\KiriFix-WWMI')
     try { $lockHeld = $runLock.WaitOne(0) } catch [Threading.AbandonedMutexException] { $lockHeld = $true }
     if (!$lockHeld) { throw 'KiriFix WWMI is already running in this Windows session.' }
+    Assert-LocalPath $scriptRoot
     foreach ($relative in @('', 'logs', 'data', 'data\moonholder.json', 'data\moonholder.source.json', 'reports', 'backups', '.runtime', '.runtime\kirifix.py')) {
         Assert-LocalPath (Join-Path $root $relative)
     }
-    $logDir = Join-Path $root 'logs'
+    $logDir = $root
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     $runId = (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)
     $logPath = Join-Path $logDir ('run-' + $runId + '.log')
@@ -32,17 +34,23 @@ try {
     Get-ChildItem -LiteralPath $logDir -Filter 'run-*.log' -File |
         Sort-Object Name -Descending | Select-Object -Skip 3 |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
-    Write-Host 'KiriFix WWMI 0.2.1'
+    Write-Host 'KiriFix WWMI 0.2.2'
     Write-Host ('Started: ' + (Get-Date -Format o))
     Write-Host ('Log: ' + $logPath)
     $mode = $env:KIRIFIX_MODE
     if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'run' }
     if ($mode -notin @('run','scan','rollback')) { throw 'Supported modes: run, scan, rollback.' }
     $mods = $env:KIRIFIX_MODS
-    if ([string]::IsNullOrWhiteSpace($mods)) { $mods = Join-Path $env:APPDATA 'XXMI Launcher\WWMI\Mods' }
+    if ([string]::IsNullOrWhiteSpace($mods)) { $mods = $scriptRoot }
     if (!(Test-Path -LiteralPath $mods -PathType Container)) {
         throw ('Mods folder not found: ' + $mods + '. Drag your Mods folder onto this CMD file.')
     }
+    $mods = (Resolve-Path -LiteralPath $mods).ProviderPath
+    $journal = $env:KIRIFIX_JOURNAL
+    if ($mode -eq 'rollback' -and ![string]::IsNullOrWhiteSpace($journal)) {
+        $journal = (Resolve-Path -LiteralPath $journal).ProviderPath
+    }
+    Set-Location -LiteralPath $root
     Write-Host ('Mode: ' + $mode + '; Mods: ' + $mods)
     $runtime = $null
     $runtimeArgs = @()
@@ -81,7 +89,7 @@ __PYTHON_SOURCE__
     $arguments = $runtimeArgs + @('-I','-u',$pythonPath,$mode,$mods)
     if ($mode -eq 'rollback') {
         if ([string]::IsNullOrWhiteSpace($env:KIRIFIX_JOURNAL)) { throw 'Rollback requires journal path as third argument.' }
-        $arguments += $env:KIRIFIX_JOURNAL
+        $arguments += $journal
     }
     Write-Host ('Python: ' + $runtime)
     $ErrorActionPreference = 'Continue'
