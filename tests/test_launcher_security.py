@@ -23,11 +23,12 @@ class LauncherSecurityTests(unittest.TestCase):
         self.cmd.write_bytes((ROOT / 'dist/KiriFix-WWMI.cmd').read_bytes())
         self.mods = self.folder / 'Mods'
         self.mods.mkdir()
-        self.service = self.folder / 'Logs-KiriFix'
+        self.service = self.folder / 'KiriFix-WWMI'
         (self.service / 'data').mkdir(parents=True)
         (self.service / 'data/moonholder.json').write_text(json.dumps({
             'characters': {'Test': {'main_hashes': [{'new': '11111111'}]}},
             'version': {'current_version': '3.7.1'}}))
+        (self.mods / 'mod.ini').write_text('[TextureOverrideComponent0]\nhash = 11111111\n')
 
     def launch(self, prefix=''):
         env = os.environ.copy()
@@ -74,6 +75,26 @@ class LauncherSecurityTests(unittest.TestCase):
         reports = list((self.service / 'reports').glob('*/report.json'))
         self.assertEqual(len(reports), 1)
         self.assertIn(f'Mods: {self.folder}', result.stdout)
-        self.assertTrue(list(self.service.glob('run-*.log')))
+        self.assertTrue(list((self.service / 'logs').glob('run-*.log')))
         self.assertEqual({p.name for p in self.folder.iterdir()},
-                         {'KiriFix-WWMI.cmd', 'Mods', 'Logs-KiriFix'})
+                         {'KiriFix-WWMI.cmd', 'Mods', 'KiriFix-WWMI'})
+
+    def test_bundled_and_extracted_cmd_share_service_folder(self):
+        nested = self.service / self.cmd.name
+        nested.write_bytes(self.cmd.read_bytes())
+        env = os.environ.copy()
+        env['TEST_HELPER'] = str(nested)
+        result = subprocess.run(f'"{os.environ["COMSPEC"]}" /d /s /c ""{nested}" "" scan"',
+                                env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f'Mods: {self.folder}', result.stdout)
+        self.assertFalse((self.service / 'KiriFix-WWMI').exists())
+        self.assertTrue(list((self.service / 'reports').glob('*/report.json')))
+
+    def test_wrong_location_warns_without_creating_reports(self):
+        (self.mods / 'mod.ini').unlink()
+        result = subprocess.run(f'"{os.environ["COMSPEC"]}" /d /s /c ""{self.cmd}" "" scan"',
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=40)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn('WARNING: WWMI mods were not detected', result.stdout)
+        self.assertFalse((self.service / 'reports').exists())

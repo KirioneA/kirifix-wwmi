@@ -5,7 +5,7 @@ Moonholder's database, with backups, rollback and logs.
 
 Created and maintained by **Kiri1**.
 
-Version: **0.2.2 — Experimental**. This project is independent of Moonholder and Caverabbit.
+Version: **0.2.3 — Experimental**. This project is independent of Moonholder and Caverabbit.
 
 ## Requirements
 
@@ -16,13 +16,35 @@ Version: **0.2.2 — Experimental**. This project is independent of Moonholder a
 
 ## Run
 
-Place `KiriFix-WWMI.cmd` directly inside the Mods folder you want to repair. Close the game,
-then double-click it. It updates the database and applies unambiguous
+Extract the archive's `KiriFix-WWMI` folder into the Mods folder you want to repair.
+Close the game and double-click `KiriFix-WWMI/KiriFix-WWMI.cmd`.
+It updates the database and applies unambiguous
 known texture fixes automatically, without confirmation prompts.
 
-The default target is the folder containing the CMD file, including its subfolders.
-It does not search AppData or scan other drives. Drag another Mods folder onto the
-CMD file to override the target. Keep a single CMD copy in your chosen Mods root.
+When the CMD is inside a folder named `KiriFix-WWMI`, its parent is the default target.
+If you move the CMD out into Mods, it scans the CMD's containing folder and keeps using
+the `KiriFix-WWMI` subfolder for service files. Both layouts use the same backups and cache.
+It does not search AppData or other drives. Drag another Mods folder onto the CMD to override
+the target. For desktop access, create a shortcut to the installed CMD instead of moving it.
+
+```text
+Mods/
+  Shorekeeper/
+  RabbitFX/
+  KiriFix-WWMI/
+    KiriFix-WWMI.cmd
+    logs/
+    backups/
+    reports/
+    data/
+    .runtime/
+```
+
+If no WWMI component sections or no recognizable characters are found, the helper stops
+without modifying mod files and displays a yellow warning. A missing structure is detected
+before downloading the database. An empty or unsupported mod folder can also trigger this warning.
+Interactive warning launches wait for Enter so the message remains visible; successful launches
+do not prompt. The warning is recorded in the launch log. Exit code `3` indicates no detected mods.
 
 The installed game version is not detected. Review the results in game.
 Do not run multiple instances or edit mod files during a run.
@@ -31,14 +53,14 @@ Do not run multiple instances or edit mod files during a run.
 
 | Folder | Contents |
 | --- | --- |
-| `Logs-KiriFix/run-*.log` | Output and errors from the last three launches |
-| `Logs-KiriFix/backups/` | Original INI bytes and recovery journals; never automatically deleted |
-| `Logs-KiriFix/reports/` | Proposed changes, warnings and diffs |
-| `Logs-KiriFix/data/` | Downloaded database and source metadata |
-| `Logs-KiriFix/.runtime/` | Python source extracted from the CMD |
+| `KiriFix-WWMI/logs/run-*.log` | Output and errors from the last three launches |
+| `KiriFix-WWMI/backups/` | Original INI bytes and recovery journals; never automatically deleted |
+| `KiriFix-WWMI/reports/` | Proposed changes, warnings and diffs |
+| `KiriFix-WWMI/data/` | Downloaded database and source metadata |
+| `KiriFix-WWMI/.runtime/` | Python source extracted from the CMD |
 
-Only the CMD and one `Logs-KiriFix` service folder are needed in Mods. The service
-folder is excluded from scanning. Existing backups and service folders from older
+The `KiriFix-WWMI` folder is excluded from scanning. Old `KiriFix-WWMI-Logs` and
+`Logs-KiriFix` service folders are also excluded. Existing backups and service folders from older
 versions are not moved or deleted automatically; keep old backups for rollback.
 
 Logs can contain your Windows username, computer name and local paths.
@@ -55,8 +77,8 @@ shown in the console. Run from a trusted, writable folder without administrator 
 ## Scan and rollback
 
 ```bat
-"KiriFix-WWMI.cmd" "D:\WWMI\Mods" scan
-"KiriFix-WWMI.cmd" "D:\WWMI\Mods" rollback "D:\WWMI\Mods\Logs-KiriFix\backups\RUN-ID\journal.json"
+"D:\WWMI\Mods\KiriFix-WWMI\KiriFix-WWMI.cmd" "D:\WWMI\Mods" scan
+"D:\WWMI\Mods\KiriFix-WWMI\KiriFix-WWMI.cmd" "D:\WWMI\Mods" rollback "D:\WWMI\Mods\KiriFix-WWMI\backups\RUN-ID\journal.json"
 ```
 
 Scan mode does not download the database or modify mods; an existing database cache

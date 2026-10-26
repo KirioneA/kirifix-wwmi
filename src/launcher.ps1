@@ -4,7 +4,13 @@ $transcriptStarted = $false
 $runLock = $null
 $lockHeld = $false
 $scriptRoot = Split-Path -Parent $env:KIRIFIX_SELF
-$root = Join-Path $scriptRoot 'Logs-KiriFix'
+if ((Split-Path -Leaf $scriptRoot) -eq 'KiriFix-WWMI') {
+    $root = $scriptRoot
+    $defaultMods = Split-Path -Parent $scriptRoot
+} else {
+    $root = Join-Path $scriptRoot 'KiriFix-WWMI'
+    $defaultMods = $scriptRoot
+}
 Set-Location -LiteralPath $scriptRoot
 function Assert-LocalPath([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
@@ -25,7 +31,7 @@ try {
     foreach ($relative in @('', 'logs', 'data', 'data\moonholder.json', 'data\moonholder.source.json', 'reports', 'backups', '.runtime', '.runtime\kirifix.py')) {
         Assert-LocalPath (Join-Path $root $relative)
     }
-    $logDir = $root
+    $logDir = Join-Path $root 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     $runId = (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)
     $logPath = Join-Path $logDir ('run-' + $runId + '.log')
@@ -34,14 +40,14 @@ try {
     Get-ChildItem -LiteralPath $logDir -Filter 'run-*.log' -File |
         Sort-Object Name -Descending | Select-Object -Skip 3 |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
-    Write-Host 'KiriFix WWMI 0.2.2'
+    Write-Host 'KiriFix WWMI 0.2.3'
     Write-Host ('Started: ' + (Get-Date -Format o))
     Write-Host ('Log: ' + $logPath)
     $mode = $env:KIRIFIX_MODE
     if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'run' }
     if ($mode -notin @('run','scan','rollback')) { throw 'Supported modes: run, scan, rollback.' }
     $mods = $env:KIRIFIX_MODS
-    if ([string]::IsNullOrWhiteSpace($mods)) { $mods = $scriptRoot }
+    if ([string]::IsNullOrWhiteSpace($mods)) { $mods = $defaultMods }
     if (!(Test-Path -LiteralPath $mods -PathType Container)) {
         throw ('Mods folder not found: ' + $mods + '. Drag your Mods folder onto this CMD file.')
     }
@@ -93,10 +99,15 @@ __PYTHON_SOURCE__
     }
     Write-Host ('Python: ' + $runtime)
     $ErrorActionPreference = 'Continue'
-    & $runtime @arguments 2>&1 | ForEach-Object { Write-Host $_.ToString() }
+    & $runtime @arguments 2>&1 | ForEach-Object {
+        if ($_.ToString().StartsWith('WARNING:')) { Write-Host $_.ToString() -ForegroundColor Yellow }
+        else { Write-Host $_.ToString() }
+    }
     $exitCode = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
-    if ($exitCode -ne 0) { Write-Host ('ERROR: helper exited with code ' + $exitCode) -ForegroundColor Red }
+    if ($exitCode -eq 3) {
+        if (![Console]::IsInputRedirected) { Read-Host 'Press Enter to close' | Out-Null }
+    } elseif ($exitCode -ne 0) { Write-Host ('ERROR: helper exited with code ' + $exitCode) -ForegroundColor Red }
 } catch {
     $exitCode = 2
     Write-Host ('ERROR: ' + $_.Exception.Message) -ForegroundColor Red

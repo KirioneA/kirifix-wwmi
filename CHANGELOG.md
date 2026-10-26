@@ -1,10 +1,19 @@
 # Changelog
 
+## 0.2.3 — Contained installation (local testing)
+
+- Package the CMD and documentation inside one `KiriFix-WWMI` folder.
+- Scan the parent Mods folder when the CMD is inside `KiriFix-WWMI`.
+- Support moving the CMD into Mods while retaining the same service folder.
+- Keep the last three launch logs under `KiriFix-WWMI/logs`.
+- Stop with a yellow, logged placement warning when WWMI mods cannot be detected.
+- Exclude current and legacy service directories from scanning.
+
 ## 0.2.2 — Local Mods folder
 
 - Use the CMD's containing folder as the default repair target.
-- Group logs, backups, reports, database cache and runtime files under `Logs-KiriFix`.
-- Exclude `Logs-KiriFix` from mod scanning.
+- Group logs, backups, reports, database cache and runtime files under `KiriFix-WWMI-Logs`.
+- Exclude `KiriFix-WWMI-Logs` from mod scanning.
 - Keep explicit drag-and-drop folder selection and the 0.2.1 launcher protections.
 - Preserve old service folders and backups without automatic migration.
 

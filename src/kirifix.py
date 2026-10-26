@@ -16,7 +16,7 @@ import tempfile
 import urllib.request
 import uuid
 
-VERSION = '0.2.2'
+VERSION = '0.2.3'
 DATABASE_URL = 'https://raw.githubusercontent.com/Moonholder/Wuwa_Mod_Fixer/main/config.json'
 HEX = re.compile(r'^[0-9a-fA-F]{8}$')
 DB_HASH = re.compile(r'^(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{16})$')
@@ -244,7 +244,7 @@ def inside(root: Path, relative: str) -> Path:
 
 def ini_files(root: Path):
     for directory, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(d for d in dirs if d.lower() != 'logs-kirifix' and not d.lower().startswith(('disabled', '.')) and not is_link(Path(directory) / d))
+        dirs[:] = sorted(d for d in dirs if d.lower() not in ('kirifix-wwmi', 'kirifix-wwmi-logs', 'logs-kirifix') and not d.lower().startswith(('disabled', '.')) and not is_link(Path(directory) / d))
         for name in sorted(files):
             if name.lower().endswith('.ini') and not name.lower().startswith('disabled'):
                 path = Path(directory) / name
@@ -272,6 +272,22 @@ def scan(root: Path, db: dict) -> list[Plan]:
         p.path = path
         plans.append(p)
     return plans
+
+
+def has_wwmi_components(root: Path) -> bool:
+    for path in ini_files(root):
+        text, _ = decode(path.read_bytes())
+        if any(re.fullmatch(r'TextureOverrideComponent\d+', s.group(1), re.I)
+               and HASH.search(s.group()) for s in SECTIONS.finditer(text)):
+            return True
+    return False
+
+
+def location_warning() -> int:
+    print('WARNING: WWMI mods were not detected in this location.', flush=True)
+    print('WARNING: Place the KiriFix-WWMI folder inside your Mods directory, or drag your Mods folder onto the CMD file.', flush=True)
+    print('WARNING: The folder may be empty or contain unsupported mods. No mod files were changed.', flush=True)
+    return 3
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -427,6 +443,8 @@ def main(argv=None) -> int:
             print('Rollback verified.')
             return 0
         root = args.mods.resolve(strict=True)
+        if not has_wwmi_components(root):
+            return location_warning()
         if args.command == 'run':
             print(f'Automatic run. Mods: {root}', flush=True)
             try:
@@ -449,6 +467,8 @@ def main(argv=None) -> int:
             if not game or not database or game[1] != database[1]:
                 raise ValueError(f'Game/database version mismatch: {args.game_version} vs {version}; no writes')
         plans = scan(root, db)
+        if not any(p.character is not None for p in plans):
+            return location_warning()
         for p in plans:
             print(f'[{p.character or "unrecognized"}] {p.path.relative_to(root)}', flush=True)
             for change in p.changes:

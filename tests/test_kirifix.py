@@ -166,7 +166,7 @@ class FileTests(unittest.TestCase):
         self.assertEqual(len(h.scan(self.root, DB)), 1)
 
     def test_service_folder_not_scanned(self):
-        service = self.root / 'Logs-KiriFix'
+        service = self.root / 'KiriFix-WWMI'
         service.mkdir()
         (service / 'old.ini').write_bytes(INI.encode())
         self.assertEqual(len(h.scan(self.root, DB)), 1)
