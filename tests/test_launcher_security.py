@@ -36,7 +36,7 @@ class LauncherSecurityTests(unittest.TestCase):
         env['TEST_MODS'] = str(self.mods)
         return subprocess.run(['powershell.exe', '-NoProfile', '-Command',
                                prefix + '& $env:TEST_HELPER $env:TEST_MODS scan; exit $LASTEXITCODE'],
-                              env=env, capture_output=True, text=True, timeout=40)
+                              env=env, capture_output=True, text=True, encoding='utf-8', timeout=40)
 
     def test_local_python_module_cannot_execute(self):
         runtime = self.service / '.runtime'
@@ -47,6 +47,17 @@ class LauncherSecurityTests(unittest.TestCase):
         result = self.launch()
         self.assertFalse(marker.exists(), result.stdout)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('READ ONLY', result.stdout)
+
+    def test_unicode_mod_paths_with_legacy_console_encoding(self):
+        mod = self.mods / '\u5fc3-\u041c\u043e\u0434-\U0001f431'
+        mod.mkdir()
+        (self.mods / 'mod.ini').rename(mod / 'mod.ini')
+        result = self.launch('[Console]::OutputEncoding=[Text.Encoding]::GetEncoding(1252); ')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        logs = list((self.service / 'logs').glob('run-*.log'))
+        self.assertEqual(len(logs), 1)
+        self.assertIn(mod.name, logs[0].read_text(encoding='utf-8-sig'))
         self.assertIn('READ ONLY', result.stdout)
 
     def test_redirected_runtime_directory_is_rejected(self):

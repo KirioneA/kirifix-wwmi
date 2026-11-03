@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import difflib
@@ -11,12 +12,18 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
+import threading
+import time
 import tempfile
 import urllib.request
+import urllib.error
 import uuid
 
-VERSION = '0.2.3'
+VERSION = '0.3.0'
+MOONHOLDER_URL = 'https://github.com/Moonholder/Wuwa_Mod_Fixer/releases/download/v3.7.0/wuwa-mod-cli_v3.7.0.exe'
+MOONHOLDER_SHA256 = '737c71507a8bc43a0794cace0aba07bccee6967de95cfb29291c9700cc85a370'
 DATABASE_URL = 'https://raw.githubusercontent.com/Moonholder/Wuwa_Mod_Fixer/main/config.json'
 HEX = re.compile(r'^[0-9a-fA-F]{8}$')
 DB_HASH = re.compile(r'^(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{16})$')
@@ -393,6 +400,72 @@ def update_database(destination: Path) -> None:
     })
 
 
+def check_database(destination: Path, force: bool = False, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    metadata_path = destination.with_suffix('.source.json')
+    raw = None
+    metadata = {}
+    try:
+        raw = destination.read_bytes()
+        validate_database(json.loads(raw))
+    except (OSError, ValueError, KeyError, TypeError):
+        raw = None
+    try:
+        value = json.loads(metadata_path.read_bytes())
+        if isinstance(value, dict) and raw is not None and value.get('sha256') == digest(raw):
+            metadata = value
+    except (OSError, ValueError):
+        pass
+    next_check = metadata.get('next_check', 0)
+    if not isinstance(next_check, (int, float)):
+        next_check = 0
+    if raw is not None and not force and now < next_check:
+        print('Database check not due; using validated local cache.', flush=True)
+        if metadata.get('last_error'):
+            print('WARNING: Last database check failed; using local rules until the next retry.', flush=True)
+        return
+    headers = {'User-Agent': 'KiriFix-WWMI/' + VERSION}
+    if raw is not None:
+        if metadata.get('etag'):
+            headers['If-None-Match'] = metadata['etag']
+        if metadata.get('last_modified'):
+            headers['If-Modified-Since'] = metadata['last_modified']
+    print('Checking official database updates (network timeout: 3s)...', flush=True)
+    try:
+        request = urllib.request.Request(DATABASE_URL, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=3) as response:
+                if not response.url.startswith('https://raw.githubusercontent.com/Moonholder/Wuwa_Mod_Fixer/'):
+                    raise ValueError('Unexpected database redirect')
+                downloaded = response.read(8_000_001)
+                if len(downloaded) > 8_000_000:
+                    raise ValueError('Database too large')
+                validate_database(json.loads(downloaded))
+                metadata['etag'] = response.headers.get('ETag')
+                metadata['last_modified'] = response.headers.get('Last-Modified')
+            if downloaded != raw:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write(destination, downloaded)
+                print('Database updated; checking which character rules changed.', flush=True)
+            else:
+                print('Database unchanged.', flush=True)
+            raw = downloaded
+        except urllib.error.HTTPError as exc:
+            if exc.code != 304 or raw is None:
+                raise
+            print('Database unchanged (HTTP 304); no database body downloaded.', flush=True)
+        metadata.update({'url': DATABASE_URL, 'sha256': digest(raw), 'checked_utc': now,
+                         'next_check': now + 86400, 'last_error': None})
+        save_json(metadata_path, metadata)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        if raw is None:
+            raise ValueError(f'Database download failed and no valid cache exists: {exc}') from exc
+        metadata.update({'url': DATABASE_URL, 'sha256': digest(raw), 'next_check': now + 600,
+                         'last_error': str(exc)})
+        save_json(metadata_path, metadata)
+        print(f'WARNING: Database check failed ({exc}); using validated local cache. Retry in 10 minutes.', flush=True)
+
+
 def report(plans: list[Plan], root: Path, db_bytes: bytes, db: dict, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=False)
     results, diffs = [], []
@@ -419,13 +492,16 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest='command', required=True)
     up = sub.add_parser('update-db', help='Explicitly download official JSON database (no programs)')
     up.add_argument('--database', type=Path, default=Path('data/moonholder.json'))
-    for name in ('scan', 'apply', 'run'):
+    for name in ('scan', 'apply', 'run', 'full-run'):
         command = sub.add_parser(name)
         command.add_argument('mods', type=Path)
         command.add_argument('--database', type=Path, default=Path('data/moonholder.json'))
         command.add_argument('--reports', type=Path, default=Path('reports'))
-        if name in ('apply', 'run'):
+        if name in ('apply', 'run', 'full-run'):
             command.add_argument('--state', type=Path, default=Path('backups'))
+        if name == 'full-run':
+            command.add_argument('--force', action='store_true', help='Ignore successful-run cache and process all mods')
+            command.add_argument('--refresh-db', action='store_true', help='Download database before processing')
         if name == 'apply':
             command.add_argument('--game-version', required=True, help='Your installed game version, for example 3.7')
             command.add_argument('--yes', action='store_true', help='Explicitly authorize this invocation to write INI files')
@@ -439,17 +515,35 @@ def main(argv=None) -> int:
             print(f'Database saved: {args.database}')
             return 0
         if args.command == 'rollback':
-            rollback(args.mods, args.journal)
+            journal_data = json.loads(args.journal.read_text(encoding='utf-8'))
+            if journal_data.get('format') == 2:
+                rollback_full(args.mods, args.journal)
+            else:
+                rollback(args.mods, args.journal)
             print('Rollback verified.')
             return 0
         root = args.mods.resolve(strict=True)
         if not has_wwmi_components(root):
             return location_warning()
-        if args.command == 'run':
+        if args.command in ('run', 'full-run'):
             print(f'Automatic run. Mods: {root}', flush=True)
+            if args.command == 'full-run':
+                with activity('Checking database freshness'):
+                    check_database(args.database, force=args.refresh_db)
             try:
-                print('Updating official texture database...', flush=True)
-                update_database(args.database)
+                use_cache = False
+                if args.command == 'full-run' and args.database.is_file():
+                    try:
+                        validate_database(json.loads(args.database.read_bytes()))
+                        use_cache = True
+                    except (ValueError, KeyError, TypeError):
+                        pass
+                if use_cache:
+                    print('Using validated local database.', flush=True)
+                else:
+                    print('Updating official texture database...', flush=True)
+                    with activity('Updating official texture database'):
+                        update_database(args.database)
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 if not args.database.is_file():
                     raise ValueError(f'Database download failed and no cache exists: {exc}') from exc
@@ -458,6 +552,9 @@ def main(argv=None) -> int:
         db = json.loads(raw)
         validate_database(db)
         print(f'Database version: {db.get("version", {}).get("current_version")}; SHA256: {digest(raw)}', flush=True)
+        if args.command == 'full-run':
+            full_run(root, args.database, args.state, args.reports, force=args.force)
+            return 0
         if args.command == 'apply':
             if not args.yes:
                 raise ValueError('Apply requires --yes. Run scan and inspect changes.diff first.')
@@ -489,9 +586,408 @@ def main(argv=None) -> int:
         elif not changed:
             print('No automatic changes needed; inspect warnings above.')
         return 0
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 2
+
+
+def moonholder_cli(runtime: Path) -> Path:
+    runtime.mkdir(parents=True, exist_ok=True)
+    executable = inside(runtime, 'wuwa-mod-cli-3.7.0.exe')
+    if executable.exists():
+        if digest(executable.read_bytes()) != MOONHOLDER_SHA256:
+            raise ValueError('Moonholder executable checksum mismatch; refusing execution')
+        return executable
+    print('Downloading official Moonholder CLI 3.7.0...', flush=True)
+    with urllib.request.urlopen(MOONHOLDER_URL, timeout=60) as response:
+        raw = response.read(40_000_001)
+    if len(raw) > 40_000_000 or digest(raw) != MOONHOLDER_SHA256:
+        raise ValueError('Moonholder download checksum mismatch; refusing execution')
+    atomic_write(executable, raw)
+    return executable
+
+
+def file_digest(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(block)
+    return value.hexdigest()
+
+
+def copy_and_hash(source: Path, target: Path) -> str:
+    value = hashlib.sha256()
+    with source.open('rb') as reader, target.open('xb') as writer:
+        for block in iter(lambda: reader.read(1024 * 1024), b''):
+            writer.write(block)
+            value.update(block)
+    return value.hexdigest()
+
+
+@contextmanager
+def activity(label: str, interval: float = 5):
+    started = time.monotonic()
+    stopped = threading.Event()
+    print(f'STAGE: {label}', flush=True)
+    def heartbeat():
+        while not stopped.wait(interval):
+            print(f'WORKING: {label}; elapsed {time.monotonic() - started:.0f}s', flush=True)
+    worker = threading.Thread(target=heartbeat, daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        worker.join()
+        print(f'TIME: {label}: {time.monotonic() - started:.2f}s', flush=True)
+
+
+def prepare_stage(root: Path, stage: Path, skipped: list | None = None, selected: set | None = None) -> dict[str, str]:
+    originals = {}
+    files = list(ini_files(root))
+    if not files:
+        raise ValueError('No INI files to stage')
+    groups = {}
+    single_root = any(path.parent == root for path in files)
+    for path in files:
+        key = '.' if single_root else path.relative_to(root).parts[0]
+        groups.setdefault(key, []).append(path)
+    for index, (name, configs) in enumerate(groups.items(), 1):
+        if selected is not None and name not in selected:
+            continue
+        print(f'COPY: mod {index}/{len(groups)} - {name}', flush=True)
+        resources = {}
+        missing = []
+        for path in configs:
+            text, _ = decode(path.read_bytes())
+            paths = [path]
+            for value in re.findall(r'^[ \t]*filename[ \t]*=[ \t]*([^\r\n]+)', text, re.M | re.I):
+                resource = path.parent / value.strip()
+                relative = resource.relative_to(root).as_posix()
+                resource = inside(root, relative)
+                if not resource.is_file():
+                    missing.append(relative)
+                else:
+                    paths.append(resource)
+            for item in paths:
+                resources[item.relative_to(root).as_posix()] = item
+        if missing:
+            reason = 'Missing resource: ' + ', '.join(missing)
+            print(f'WARNING: Skipping entire mod {name}; {reason}', flush=True)
+            if skipped is not None:
+                skipped.append({'mod': name, 'reason': reason})
+            continue
+        for relative, item in resources.items():
+            if relative not in originals:
+                target = inside(stage, relative)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                originals[relative] = copy_and_hash(item, target)
+                if file_digest(item) != originals[relative]:
+                    raise ValueError(f'Concurrent edit during staging: {relative}')
+    if not originals:
+        raise ValueError('Missing resources: no complete mods remain; no mod files changed')
+    return originals
+
+
+def commit_full(root: Path, stage: Path, originals: dict[str, str], state: Path) -> Path | None:
+    changes = []
+    staged_files = list(stage.rglob('*'))
+    last_progress = 0
+    for index, path in enumerate(staged_files, 1):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(stage).as_posix()
+        if relative not in originals and path.suffix.lower() != '.png':
+            continue
+        if time.monotonic() - last_progress >= 2:
+            print(f'CHECK: staged entry {index}/{len(staged_files)} - {relative}', flush=True)
+            last_progress = time.monotonic()
+        expected = originals.get(relative)
+        if expected != file_digest(path):
+            target = inside(root, relative)
+            before = target.read_bytes() if expected is not None else None
+            if before is not None and digest(before) != expected:
+                raise ValueError(f'Concurrent edit; no changes applied: {relative}')
+            changes.append((relative, before, path.read_bytes()))
+    for index, (relative, expected) in enumerate(originals.items(), 1):
+        if time.monotonic() - last_progress >= 2:
+            print(f'CHECK: original file {index}/{len(originals)} - {relative}', flush=True)
+            last_progress = time.monotonic()
+        if not inside(stage, relative).is_file():
+            raise ValueError(f'Staged resource disappeared: {relative}')
+        if file_digest(inside(root, relative)) != expected:
+            raise ValueError(f'Concurrent edit; no changes applied: {relative}')
+    for relative, before, after in changes:
+        target = inside(root, relative)
+        if before is None and target.exists():
+            raise ValueError(f'New resource already exists: {relative}')
+    if not changes:
+        print('No automatic changes needed.', flush=True)
+        return None
+    run = state.resolve() / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8])
+    run.mkdir(parents=True, exist_ok=False)
+    entries = []
+    for i, (relative, before, after) in enumerate(changes):
+        print(f'BACKUP: {i + 1}/{len(changes)} - {relative}', flush=True)
+        backup = f'{i:04d}.bak' if before is not None else None
+        if backup:
+            atomic_write(run / backup, before)
+        entries.append({'path': relative, 'backup': backup,
+                        'before': digest(before) if before is not None else None, 'after': digest(after)})
+    journal = run / 'journal.json'
+    save_json(journal, {'format': 2, 'tool': VERSION, 'root': str(root), 'entries': entries})
+    print(f'Recovery journal: {journal}', flush=True)
+    try:
+        for index, ((relative, before, after), entry) in enumerate(zip(changes, entries), 1):
+            target = inside(root, relative)
+            current = target.read_bytes() if target.exists() else None
+            if current != before:
+                raise ValueError(f'Concurrent edit: {relative}')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write(target, after)
+            if target.read_bytes() != after:
+                raise ValueError(f'Write verification failed: {relative}')
+            print(f'APPLIED: {index}/{len(changes)} - {relative}', flush=True)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f'{exc}; recovery journal: {journal}') from exc
+    print(f'Applied and verified: {len(changes)} files. Rollback journal: {journal}', flush=True)
+    return journal
+
+
+def rollback_full(root: Path, journal: Path) -> None:
+    root = root.resolve(strict=True)
+    data = json.loads(journal.read_text(encoding='utf-8'))
+    if data.get('format') != 2 or Path(data['root']).resolve() != root:
+        raise ValueError('Journal root/format mismatch')
+    restore, seen = [], set()
+    for entry in data['entries']:
+        target = inside(root, entry['path'])
+        if target in seen:
+            raise ValueError('Duplicate journal entry')
+        seen.add(target)
+        before = None
+        if entry['before'] is not None:
+            before = inside(journal.parent, entry['backup']).read_bytes()
+            if digest(before) != entry['before']:
+                raise ValueError('Backup checksum mismatch')
+        elif entry['backup'] is not None:
+            raise ValueError('Invalid new-file backup')
+        current = target.read_bytes() if target.exists() else None
+        if current == before:
+            continue
+        if current is None or digest(current) != entry['after']:
+            raise ValueError(f'Later edits detected; refusing rollback: {target}')
+        restore.append((target, current, before))
+    for target, expected, before in restore:
+        if target.read_bytes() != expected:
+            raise ValueError('Concurrent edit during rollback')
+        if before is None:
+            target.unlink()
+        else:
+            atomic_write(target, before)
+            if target.read_bytes() != before:
+                raise ValueError('Rollback verification failed')
+
+
+def run_moonholder(command: list[str], cwd: str, destination: Path, timeout: float = 900) -> tuple[int, list]:
+    events = []
+    pending = b''
+    last_progress = 0
+    def consume(data: bytes, final: bool = False):
+        nonlocal pending, last_progress
+        pending += data
+        lines = pending.split(b'\n')
+        pending = b'' if final else lines.pop()
+        for line in lines:
+            try:
+                event = json.loads(line.decode('utf-8'))
+            except (ValueError, UnicodeError):
+                continue
+            events.append(event)
+            if not isinstance(event, dict):
+                continue
+            if event.get('event') in ('progress', 'file_success', 'file_skipped'):
+                now = time.monotonic()
+                if now - last_progress >= 1 or event.get('percent') == 100:
+                    print(f'MOONHOLDER: {event.get("current", "?")}/{event.get("total", "?")} INI; {event.get("percent", "?")}%'
+                          + (f' - {Path(event["path"]).name}' if event.get('path') else ''), flush=True)
+                    last_progress = now
+    stdout_path = destination / 'moonholder.stdout.log'
+    with stdout_path.open('wb') as output, (destination / 'moonholder.stderr.log').open('wb') as errors:
+        process = subprocess.Popen(command, cwd=cwd, stdout=output, stderr=errors)
+        started = time.monotonic()
+        try:
+            with stdout_path.open('rb') as reader:
+                while process.poll() is None:
+                    consume(reader.read())
+                    if time.monotonic() - started >= timeout:
+                        raise subprocess.TimeoutExpired(command, timeout)
+                    time.sleep(0.2)
+                consume(reader.read(), final=True)
+            return process.wait(), events
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+
+def fast_inventory(root: Path) -> tuple[dict, set]:
+    configs = list(ini_files(root))
+    single = any(p.parent == root for p in configs)
+    groups = {}
+    rabbits = set()
+    for config in configs:
+        key = '.' if single else config.relative_to(root).parts[0]
+        groups.setdefault(key, {})
+        text, _ = decode(config.read_bytes())
+        if re.search(r'^namespace[ \t]*=[ \t]*RabbitFX[ \t]*\r?$', text, re.M | re.I):
+            rabbits.add(key)
+    for directory, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if d.lower() not in ('kirifix-wwmi', 'kirifix-wwmi-logs', 'logs-kirifix')
+                         and not d.lower().startswith(('disabled', '.')) and not is_link(Path(directory) / d))
+        for name in sorted(files):
+            if name.lower().endswith(('.bak', '.log')) or name.lower().startswith(('disabled', '.')):
+                continue
+            path = Path(directory) / name
+            if is_link(path):
+                continue
+            relative = path.relative_to(root)
+            key = '.' if single else relative.parts[0]
+            if key in groups:
+                info = path.stat()
+                groups[key][relative.as_posix()] = [info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+    return groups, rabbits
+
+
+def rules_digest(value) -> str:
+    return digest(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8'))
+
+
+def mod_rule_signatures(root: Path, db: dict, inventory: dict) -> dict:
+    signatures = {}
+    hashes_by_mod = {name: set() for name in inventory}
+    single = '.' in inventory
+    for path in ini_files(root):
+        name = '.' if single else path.relative_to(root).parts[0]
+        if name in hashes_by_mod:
+            text, _ = decode(path.read_bytes())
+            hashes_by_mod[name].update(m.group(2).lower() for m in HASH.finditer(text))
+    lookup = {}
+    for name, cfg in db['characters'].items():
+        for item in cfg.get('main_hashes', []):
+            for value in [item['new']] + item.get('old', []):
+                lookup.setdefault(value.lower(), set()).add(name)
+    for name, hashes in hashes_by_mod.items():
+        characters = set().union(*(lookup.get(value, set()) for value in hashes)) if hashes else set()
+        rules = {character: db['characters'][character] for character in sorted(characters)}
+        signatures[name] = rules_digest(rules if characters else db['characters'])
+    return signatures
+
+
+def global_rules(db: dict) -> str:
+    common = {key: value for key, value in db.items() if key not in ('characters', 'lang', 'version')}
+    common['min_required_version'] = db.get('version', {}).get('min_required_version')
+    return rules_digest(common)
+
+
+def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool = False) -> None:
+    started = time.monotonic()
+    raw = database.read_bytes()
+    db = json.loads(raw)
+    with activity('Checking mod file lists, sizes and modification times'):
+        inventory, rabbits = fast_inventory(root)
+        rules = mod_rule_signatures(root, db, inventory)
+    cache_path = database.resolve().parent / 'processed-mods.json'
+    context = {'root': str(root.resolve()), 'logic': 'full-repair-v1', 'global_rules': global_rules(db),
+               'moonholder': MOONHOLDER_SHA256,
+               'rabbitfx': {name: inventory[name] for name in sorted(rabbits)}}
+    cached = {}
+    if not force and cache_path.is_file():
+        try:
+            saved = json.loads(cache_path.read_bytes())
+            if isinstance(saved, dict) and saved.get('context') == context and isinstance(saved.get('mods'), dict):
+                cached = saved.get('mods', {})
+            elif isinstance(saved, dict) and isinstance(saved.get('context'), dict) and isinstance(saved.get('mods'), dict):
+                previous = dict(saved['context'])
+                if previous.pop('database', None) == digest(raw) and previous.pop('logic', None) == '0.3.0-preview.4':
+                    expected = {key: value for key, value in context.items() if key not in ('logic', 'global_rules')}
+                    if previous == expected:
+                        cached = {name: dict(record, rules=rules.get(name)) for name, record in saved['mods'].items()
+                                  if isinstance(record, dict)}
+                        print('CACHE: Migrated verified preview.4 results; repair logic is unchanged.', flush=True)
+        except (OSError, ValueError):
+            print('WARNING: Invalid processing cache; full verification required.', flush=True)
+    dirty = {name for name, signature in inventory.items()
+             if not isinstance(cached.get(name), dict) or cached[name].get('files') != signature
+             or cached[name].get('rules') != rules[name]}
+    print(f'CACHE: {len(inventory) - len(dirty)}/{len(inventory)} mod folders unchanged; {len(dirty)} require processing.', flush=True)
+    for name in sorted(inventory.keys() - dirty):
+        if cached[name].get('skipped'):
+            print(f'WARNING: Still skipping incomplete mod {name}: {cached[name]["skipped"]}', flush=True)
+    if not dirty:
+        save_json(cache_path, {'context': context, 'mods': {name: cached[name] for name in inventory}})
+        print(f'FAST RUN: No changed mods or repair rules. Nothing copied or modified. Total: {time.monotonic() - started:.2f}s', flush=True)
+        return
+    runtime = database.resolve().parent.parent / '.runtime'
+    with activity('Checking/downloading Moonholder CLI'):
+        executable = moonholder_cli(runtime)
+    destination = reports.resolve() / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8])
+    destination.mkdir(parents=True, exist_ok=False)
+    with tempfile.TemporaryDirectory(prefix='full-stage-', dir=runtime) as temporary:
+        stage = Path(temporary) / 'Mods'
+        stage.mkdir()
+        skipped = []
+        with activity('1/4 Copying mod resources and verifying checksums; originals unchanged'):
+            try:
+                originals = prepare_stage(root, stage, skipped, selected=dirty | rabbits)
+            finally:
+                save_json(destination / 'skipped-mods.json', skipped)
+        config = Path(temporary) / 'config.json'
+        config.write_bytes(raw)
+        print(f'Moonholder stage: {len(originals)} input files copied. Originals remain untouched.', flush=True)
+        with activity('2/4 Moonholder model and bone repair on temporary copies'):
+            returncode, events = run_moonholder(
+                [str(executable), '--path', str(stage), '--config', str(config), '--format', 'json'],
+                temporary, destination)
+        finishes = [e for e in events if isinstance(e, dict) and e.get('event') == 'finish']
+        if returncode or not finishes or not finishes[-1].get('success') or finishes[-1].get('summary', {}).get('failure_count', 0):
+            raise ValueError(f'Moonholder repair failed; originals unchanged. Details: {destination}')
+        print('Moonholder stage verified. Running RabbitFX texture stage...', flush=True)
+        with activity('3/4 RabbitFX texture processing on temporary copies'):
+            plans = scan(stage, db)
+            report(plans, stage, raw, db, destination / 'textures')
+            for p in plans:
+                if p.after != p.before:
+                    atomic_write(p.path, p.after)
+        with activity('4/4 Validating originals, saving backups and applying changes'):
+            journal = commit_full(root, stage, originals, state)
+        save_json(destination / 'full-report.json', {'tool': VERSION, 'root': str(root),
+                  'moonholder': '3.7.0', 'database_sha256': digest(raw),
+                  'journal': str(journal) if journal else None, 'skipped_mods': skipped, 'events': events})
+        if skipped:
+            print(f"WARNING: {len(skipped)} incomplete mod(s) skipped; see {destination / 'skipped-mods.json'}", flush=True)
+        print(f'Full report: {destination}', flush=True)
+        current, current_rabbits = fast_inventory(root)
+        eligible = set(inventory) - dirty | {name for name in dirty if name in current}
+        changed_paths = set()
+        if journal:
+            changed_paths = {e['path'] for e in json.loads(journal.read_bytes())['entries']}
+        for name in inventory:
+            old_unwritten = {p: v for p, v in inventory[name].items() if p not in changed_paths}
+            new_unwritten = {p: v for p, v in current.get(name, {}).items() if p not in changed_paths}
+            if old_unwritten != new_unwritten:
+                eligible.discard(name)
+        if any(name not in eligible for name in rabbits) or current_rabbits != rabbits:
+            eligible.clear()
+        reasons = {entry['mod']: entry['reason'] for entry in skipped}
+        records = {name: {'files': current[name], 'skipped': reasons.get(name) if name in dirty else cached.get(name, {}).get('skipped')}
+                   for name in eligible if name in current}
+        post_rules = mod_rule_signatures(root, db, current)
+        for name, record in records.items():
+            record['rules'] = post_rules[name]
+        context['rabbitfx'] = {name: current[name] for name in sorted(current_rabbits)}
+        save_json(cache_path, {'context': context, 'mods': records})
+        print(f'TIME: Full run total: {time.monotonic() - started:.2f}s', flush=True)
 
 
 if __name__ == '__main__':

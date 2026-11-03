@@ -1,6 +1,25 @@
 # Changelog
 
-## 0.2.3 — Contained installation (local testing)
+## 0.3.0 — Model repairs and fast repeat runs
+
+- Run official Moonholder CLI 3.7.0 on temporary copies before RabbitFX texture processing.
+- Download the CLI separately and verify its pinned SHA-256 before execution.
+- Back up changed INIs and binary buffers, with checksummed rollback for added resources.
+- Skip incomplete mods without blocking other complete mod folders.
+- Show processing progress, elapsed time and per-stage timings.
+- Cache successful processing and stage only changed mods and required dependencies.
+- Check database updates once per day, with conditional requests and validated offline fallback.
+- Invalidate matching character caches for changed rules; retain conservative shared-rule checks.
+- Preserve Unicode mod paths in console output and logs.
+
+## 0.2.4 — Unicode output
+
+- Force UTF-8 for Python output and PowerShell decoding, including isolated Python launches.
+- Preserve Chinese, Cyrillic and emoji mod paths in launch logs.
+- Restore the previous console output encoding when the launcher exits.
+- Add a regression test using a legacy Windows console encoding.
+
+## 0.2.3 — Contained installation
 
 - Package the CMD and documentation inside one `KiriFix-WWMI` folder.
 - Scan the parent Mods folder when the CMD is inside `KiriFix-WWMI`.

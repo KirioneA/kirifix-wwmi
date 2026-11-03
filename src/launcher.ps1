@@ -3,6 +3,7 @@ $exitCode = 2
 $transcriptStarted = $false
 $runLock = $null
 $lockHeld = $false
+$previousOutputEncoding = [Console]::OutputEncoding
 $scriptRoot = Split-Path -Parent $env:KIRIFIX_SELF
 if ((Split-Path -Leaf $scriptRoot) -eq 'KiriFix-WWMI') {
     $root = $scriptRoot
@@ -24,6 +25,7 @@ function Assert-LocalPath([string]$Path) {
     }
 }
 try {
+    [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
     $runLock = [Threading.Mutex]::new($false, 'Local\KiriFix-WWMI')
     try { $lockHeld = $runLock.WaitOne(0) } catch [Threading.AbandonedMutexException] { $lockHeld = $true }
     if (!$lockHeld) { throw 'KiriFix WWMI is already running in this Windows session.' }
@@ -40,12 +42,12 @@ try {
     Get-ChildItem -LiteralPath $logDir -Filter 'run-*.log' -File |
         Sort-Object Name -Descending | Select-Object -Skip 3 |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
-    Write-Host 'KiriFix WWMI 0.2.3'
+    Write-Host 'KiriFix WWMI 0.3.0'
     Write-Host ('Started: ' + (Get-Date -Format o))
     Write-Host ('Log: ' + $logPath)
     $mode = $env:KIRIFIX_MODE
     if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'run' }
-    if ($mode -notin @('run','scan','rollback')) { throw 'Supported modes: run, scan, rollback.' }
+    if ($mode -notin @('run','scan','rollback','force','update')) { throw 'Supported modes: run, scan, rollback, force, update.' }
     $mods = $env:KIRIFIX_MODS
     if ([string]::IsNullOrWhiteSpace($mods)) { $mods = $defaultMods }
     if (!(Test-Path -LiteralPath $mods -PathType Container)) {
@@ -73,7 +75,7 @@ try {
     if (Test-Path -LiteralPath $bundled) { $candidates += @{ Path = $bundled; Prefix = @() } }
     foreach ($candidate in $candidates) {
         Write-Host ('Checking Python: ' + $candidate.Path)
-        $probeArgs = @($candidate.Prefix) + @('-I','-c','import sys; print(sys.version); sys.exit(0 if sys.version_info >= (3,10) else 1)')
+        $probeArgs = @($candidate.Prefix) + @('-I','-X','utf8','-c','import sys; print(sys.version); sys.exit(0 if sys.version_info >= (3,10) else 1)')
         try {
             $ErrorActionPreference = 'Continue'
             & $candidate.Path @probeArgs 2>&1 | ForEach-Object { Write-Host $_.ToString() }
@@ -92,7 +94,11 @@ try {
 __PYTHON_SOURCE__
 '@
     [IO.File]::WriteAllText($pythonPath, $pythonSource, [Text.UTF8Encoding]::new($false))
-    $arguments = $runtimeArgs + @('-I','-u',$pythonPath,$mode,$mods)
+    $helperMode = $mode
+    if ($mode -in @('run','force','update')) { $helperMode = 'full-run' }
+    $arguments = $runtimeArgs + @('-I','-X','utf8','-u',$pythonPath,$helperMode,$mods)
+    if ($mode -eq 'force') { $arguments += '--force' }
+    if ($mode -eq 'update') { $arguments += '--refresh-db' }
     if ($mode -eq 'rollback') {
         if ([string]::IsNullOrWhiteSpace($env:KIRIFIX_JOURNAL)) { throw 'Rollback requires journal path as third argument.' }
         $arguments += $journal
@@ -120,5 +126,6 @@ __PYTHON_SOURCE__
     }
     if ($lockHeld) { $runLock.ReleaseMutex() }
     if ($null -ne $runLock) { $runLock.Dispose() }
+    [Console]::OutputEncoding = $previousOutputEncoding
 }
 exit $exitCode
