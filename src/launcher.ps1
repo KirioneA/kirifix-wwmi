@@ -42,7 +42,7 @@ try {
     Get-ChildItem -LiteralPath $logDir -Filter 'run-*.log' -File |
         Sort-Object Name -Descending | Select-Object -Skip 3 |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
-    Write-Host 'KiriFix WWMI 0.3.0'
+    Write-Host 'KiriFix WWMI 0.3.1'
     Write-Host ('Started: ' + (Get-Date -Format o))
     Write-Host ('Log: ' + $logPath)
     $mode = $env:KIRIFIX_MODE

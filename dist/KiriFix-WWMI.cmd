@@ -76,7 +76,7 @@ try {
     Get-ChildItem -LiteralPath $logDir -Filter 'run-*.log' -File |
         Sort-Object Name -Descending | Select-Object -Skip 3 |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
-    Write-Host 'KiriFix WWMI 0.3.0'
+    Write-Host 'KiriFix WWMI 0.3.1'
     Write-Host ('Started: ' + (Get-Date -Format o))
     Write-Host ('Log: ' + $logPath)
     $mode = $env:KIRIFIX_MODE
@@ -148,7 +148,7 @@ import urllib.request
 import urllib.error
 import uuid
 
-VERSION = '0.3.0'
+VERSION = '0.3.1'
 MOONHOLDER_URL = 'https://github.com/Moonholder/Wuwa_Mod_Fixer/releases/download/v3.7.0/wuwa-mod-cli_v3.7.0.exe'
 MOONHOLDER_SHA256 = '737c71507a8bc43a0794cace0aba07bccee6967de95cfb29291c9700cc85a370'
 DATABASE_URL = 'https://raw.githubusercontent.com/Moonholder/Wuwa_Mod_Fixer/main/config.json'
@@ -231,6 +231,93 @@ def one_resource(block: str) -> str | None:
     return assignments[0]
 
 
+def texture_selector(block):
+    condition = r'\$\w+(?:\s*(?:==|!=)\s*-?\d+)?'
+    branch = re.compile(rf'(if|else if) ({condition}(?:\s*(?:\|\||&&)\s*{condition})*)', re.I)
+    template, resources, stack = [], [], []
+    for raw in block.splitlines()[1:]:
+        line = ' '.join(raw.split(';', 1)[0].split())
+        if not line or re.match(r'^(hash|match_priority)\s*=', line, re.I):
+            continue
+        match = branch.fullmatch(line)
+        if match and match[1].lower() == 'if':
+            if (stack and stack[-1][1]) or (not stack and template):
+                return None
+            if stack:
+                stack[-1][1] = True
+            template.append((len(stack), line))
+            stack.append([False, False])
+        elif line.lower() == 'else' or match:
+            if not stack or stack[-1][0] or not stack[-1][1]:
+                return None
+            stack[-1] = [line.lower() == 'else', False]
+            template.append((len(stack) - 1, line))
+        elif line.lower() == 'endif':
+            if not stack or not stack.pop()[1]:
+                return None
+            template.append((len(stack), 'endif'))
+        else:
+            resource = re.fullmatch(r'this\s*=\s*(Resource[\w-]+)', line, re.I)
+            if not resource or not stack or stack[-1][1]:
+                return None
+            stack[-1][1] = True
+            template.append((len(stack), None))
+            resources.append(resource[1])
+    if not stack and resources:
+        return template, resources
+    return None
+
+
+def conditional_outfit_bindings(block, candidates, resources, base, newline):
+    channels = ('Diffuse', 'Lightmap', 'Normalmap')
+    if base is None or set(candidates) != set(channels):
+        return None
+    selectors = {}
+    template = None
+    for channel, overrides in candidates.items():
+        if len(overrides) != 1:
+            return None
+        selector = texture_selector(overrides[0])
+        if not selector:
+            return None
+        shape, selected = selector
+        if template is not None and template != shape:
+            return None
+        template = shape
+        for resource in selected:
+            section = resources.get(resource.lower(), '')
+            files = re.findall(r'^[ \t]*filename[ \t]*=[ \t]*([^;\r\n]+)', section, re.M | re.I)
+            try:
+                if len(files) != 1 or not inside(base, files[0].strip().strip('"').replace('\\', '/')).is_file():
+                    return None
+            except ValueError:
+                return None
+        selectors[channel] = iter(selected)
+    anchors = list(re.finditer(
+        r'^([ \t]+)run[ \t]*=[ \t]*CommandListOverrideSharedResources[ \t]*\r?\n',
+        block, re.M | re.I))
+    draw = re.search(r'^[ \t]*drawindexed[ \t]*=', block, re.M | re.I)
+    if len(anchors) != 1 or not draw or draw.start() < anchors[0].end():
+        return None
+    anchor = anchors[0]
+    prefix = block[:anchor.start()].splitlines()
+    if prefix[-1].rstrip().lower() != anchor[1] + 'run = commandlisttriggerresourceoverrides':
+        return None
+    if any(line.split(';', 1)[0].strip() for line in block[anchor.end():draw.start()].splitlines()):
+        return None
+    lines = []
+    for depth, command in template:
+        indent = anchor[1] + '    ' * depth
+        if command is not None:
+            lines.append(indent + command)
+            continue
+        for channel in channels:
+            lines.append(f'{indent}Resource\\RabbitFX\\{channel} = ref {next(selectors[channel])}')
+        lines.append(indent + 'run = CommandList\\RabbitFX\\SetTextures')
+    return block[:anchor.end()] + newline.join(lines) + newline + block[anchor.end():]
+
+
+
 def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None) -> Plan:
     text, encoding = decode(data)
     p = Plan(data, data)
@@ -262,6 +349,7 @@ def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None) ->
     resources = {m.group(1).lower(): m.group() for m in sections if m.group(1).lower().startswith('resource')}
     bindings: dict[int, dict[str, set[str]]] = {}
     ambiguous: set[tuple[int, str]] = set()
+    texture_overrides: dict[int, dict[str, list[str]]] = {}
 
     def override(block: str) -> str:
         name = section_name(block)
@@ -296,6 +384,7 @@ def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None) ->
                         resource = None
             for i in ids:
                 channel = CHANNELS[meta['type']]
+                texture_overrides.setdefault(i, {}).setdefault(channel, []).append(block)
                 if resource:
                     bindings.setdefault(i, {}).setdefault(channel, set()).add(resource)
                 else:
@@ -316,6 +405,11 @@ def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None) ->
         i = int(match.group(1))
         if i in cfg.get('skip_components', []):
             return block
+        if rabbit and not re.search(r'RabbitFX', block, re.I):
+            outfit = conditional_outfit_bindings(block, texture_overrides.get(i, {}), resources, base, newline)
+            if outfit is not None:
+                p.changes.append(f'Component{i}: bind conditional outfit textures')
+                return outfit
         candidates = bindings.get(i, {})
         if not candidates:
             return block
@@ -1025,7 +1119,7 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         inventory, rabbits = fast_inventory(root)
         rules = mod_rule_signatures(root, db, inventory)
     cache_path = database.resolve().parent / 'processed-mods.json'
-    context = {'root': str(root.resolve()), 'logic': 'full-repair-v1', 'global_rules': global_rules(db),
+    context = {'root': str(root.resolve()), 'logic': 'full-repair-v5', 'global_rules': global_rules(db),
                'moonholder': MOONHOLDER_SHA256,
                'rabbitfx': {name: inventory[name] for name in sorted(rabbits)}}
     cached = {}
@@ -1036,7 +1130,7 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
                 cached = saved.get('mods', {})
             elif isinstance(saved, dict) and isinstance(saved.get('context'), dict) and isinstance(saved.get('mods'), dict):
                 previous = dict(saved['context'])
-                if previous.pop('database', None) == digest(raw) and previous.pop('logic', None) == '0.3.0-preview.4':
+                if context['logic'] == 'full-repair-v2' and previous.pop('database', None) == digest(raw) and previous.pop('logic', None) == '0.3.0-preview.4':
                     expected = {key: value for key, value in context.items() if key not in ('logic', 'global_rules')}
                     if previous == expected:
                         cached = {name: dict(record, rules=rules.get(name)) for name, record in saved['mods'].items()

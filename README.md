@@ -9,7 +9,7 @@ Version: **0.3.0 — Experimental**. This project is independent of Moonholder a
 ## Requirements
 
 - Windows with Windows PowerShell 5.1.
-- Python 3.10 or newer. An existing Codex Python runtime can also be used.
+- The Windows x64 release includes a portable Python runtime.
 - WWMI and RabbitFX installed separately.
 - Internet access for the first database download.
 
