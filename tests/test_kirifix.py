@@ -57,6 +57,38 @@ class PlannerTests(unittest.TestCase):
         self.assertNotIn(b'Resource\\RabbitFX\\Diffuse', p.after)
         self.assertTrue(p.warnings)
 
+    def test_conditional_materialmap_matches_outfit_branches(self):
+        db = copy.deepcopy(DB)
+        textures = db['characters']['Hero']['textures']
+        text = INI.split('[ResourceBody]', 1)[0]
+        for channel, texture_hash in zip('DLNM', ('12345670', '12345671', '12345672', '12345673')):
+            textures[texture_hash] = {'meta': {'id': 3, 'type': channel}}
+            text += (
+                f'[TextureOverride{channel}]\r\nhash = {texture_hash}\r\n'
+                f'if $outfit == 0\r\n    this = Resource{channel}A\r\n'
+                f'else\r\n    this = Resource{channel}B\r\nendif\r\n'
+                f'[Resource{channel}A]\r\nfilename = A.dds\r\n'
+                f'[Resource{channel}B]\r\nfilename = B.dds\r\n'
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / 'A.dds').touch()
+            (base / 'B.dds').touch()
+            p = h.plan_bytes(text.encode(), db, True, base)
+            component = p.after.decode().split('[TextureOverrideD]', 1)[0]
+            self.assertIn('Materialmap = ref ResourceMA\r\n', component)
+            first, second = component.split('    else\r\n')
+            self.assertIn('Materialmap = ref ResourceMA\r\n', first)
+            self.assertIn('Materialmap = ref ResourceMB\r\n', second)
+            self.assertLess(second.index('SetTextures'), second.index('drawindexed'))
+            self.assertEqual(h.plan_bytes(p.after, db, True, base).after, p.after)
+
+            mismatched = text.replace(
+                'hash = 12345673\r\nif $outfit == 0',
+                'hash = 12345673\r\nif $outfit == 1',
+            ).encode()
+            self.assertEqual(h.plan_bytes(mismatched, db, True, base).after, mismatched)
+
     def test_existing_bindings_preserved(self):
         text = INI.replace('    drawindexed', '    Resource\\RabbitFX\\Normalmap = ref ResourceCustom\r\n    run = CommandList\\RabbitFX\\SetTextures\r\n    drawindexed')
         p = h.plan_bytes(text.encode(), DB, True)

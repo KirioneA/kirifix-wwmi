@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3 — Rover eye and conditional texture repairs
+
+- Repair legacy female Rover eye shape keys after Moonholder when the batch signature matches.
+- Restore conditional RabbitFX Materialmap bindings when texture branches match and the resources are available.
+- Refresh the repair cache on the first run after updating.
+
 ## 0.3.0 — Model repairs and fast repeat runs
 
 - Run official Moonholder CLI 3.7.0 on temporary copies before RabbitFX texture processing.

@@ -137,8 +137,10 @@ unsupported or conditional resource logic. Disabled folders and internal links a
 
 The default run delegates model hashes, supported vertex-group remaps and other default
 repairs to Moonholder. Its optional rendering/stable-texture switches are not enabled.
-Moonholder can add fallback textures and resource checks. The second stage remains
-limited to conservative texture hash updates and RabbitFX assignments.
+Moonholder can add fallback textures and resource checks. The second stage applies
+conservative texture hash updates and RabbitFX assignments, including supported
+conditional Materialmap bindings. Full repair also updates legacy female Rover
+eye shape keys when the batch signature matches.
 Scan mode previews ONLY the texture stage and does not run Moonholder.
 It does not install RabbitFX or automatically update the pinned CLI or its own code.
 Mods with missing resources are skipped as a whole, with a warning and a skipped-mods.json report.

@@ -321,7 +321,7 @@ class FullRepairTests(unittest.TestCase):
             self.assertEqual(request.call_count, 2)
             self.assertEqual(request.call_args[1]['timeout'], 3)
 
-    def test_preview4_cache_migrates_without_reprocessing(self):
+    def test_preview4_cache_reprocesses_once_with_current_repair_rules(self):
         finish = (0, [{'event': 'finish', 'success': True}])
         with patch.object(h, 'moonholder_cli', return_value=self.base / 'cli.exe'), patch.object(h, 'run_moonholder', return_value=finish) as upstream:
             self.cached_run()
@@ -334,8 +334,10 @@ class FullRepairTests(unittest.TestCase):
                 record.pop('rules')
             h.save_json(path, saved)
             self.cached_run()
-            self.assertEqual(upstream.call_count, 1)
+            self.assertEqual(upstream.call_count, 2)
             self.assertIn('rules', json.loads(path.read_bytes())['mods']['.'])
+            self.cached_run()
+            self.assertEqual(upstream.call_count, 2)
 
     def test_invalid_database_response_keeps_valid_cache(self):
         database = self.base / 'database.json'

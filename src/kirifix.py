@@ -21,7 +21,7 @@ import urllib.request
 import urllib.error
 import uuid
 
-VERSION = '0.3.2'
+VERSION = '0.3.3'
 MOONHOLDER_URL = 'https://github.com/Moonholder/Wuwa_Mod_Fixer/releases/download/v3.7.0/wuwa-mod-cli_v3.7.0.exe'
 MOONHOLDER_SHA256 = '737c71507a8bc43a0794cace0aba07bccee6967de95cfb29291c9700cc85a370'
 DATABASE_URL = 'https://raw.githubusercontent.com/Moonholder/Wuwa_Mod_Fixer/main/config.json'
@@ -143,6 +143,8 @@ def texture_selector(block):
 
 def conditional_outfit_bindings(block, candidates, resources, base, newline):
     channels = ('Diffuse', 'Lightmap', 'Normalmap')
+    if 'Materialmap' in candidates:
+        channels += ('Materialmap',)
     if base is None or set(candidates) != set(channels):
         return None
     selectors = {}
@@ -191,7 +193,44 @@ def conditional_outfit_bindings(block, candidates, resources, base, newline):
 
 
 
-def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None) -> Plan:
+def repair_rover_shape_keys(text: str, sections: list[re.Match]) -> str:
+    signature = {
+        'commandlistsetupshapekeysbatch': {
+            'shapekey_checksum_batch0': '1398',
+            'shapekey_checksum_batch1': '705',
+            'shapekey_vertex_offset_original_batch0': '0',
+            'shapekey_vertex_offset_original_batch1': '49931',
+        },
+        'commandlistloadshapekeysbatch': {
+            'shapekey_dispatch_size_y_original_batch0': '1561',
+            'shapekey_dispatch_size_y_original_batch1': '555',
+        },
+    }
+    updates = {
+        'shapekey_vertex_offset_original_batch1': '55177',
+        'shapekey_dispatch_size_y_original_batch0': '1725',
+    }
+    by_name = {section[1].lower(): section for section in sections}
+    edits = []
+    for name, expected in signature.items():
+        section = by_name.get(name)
+        if section is None:
+            return text
+        for key, value in expected.items():
+            pattern = r'^[ \t]*\$\\WWMIv1\\' + key + r'[ \t]*=[ \t]*(\d+)[ \t]*(?:;[^\r\n]*)?\r?$'
+            matches = list(re.finditer(pattern, section[0], re.I | re.M))
+            if len(matches) != 1 or matches[0][1] != value:
+                return text
+            if key in updates:
+                start, end = matches[0].span(1)
+                edits.append((section.start() + start, section.start() + end, updates[key]))
+    for start, end, value in sorted(edits, reverse=True):
+        text = text[:start] + value + text[end:]
+    return text
+
+
+def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None,
+               *, after_moonholder: bool = False) -> Plan:
     text, encoding = decode(data)
     p = Plan(data, data)
     sections = list(SECTIONS.finditer(text))
@@ -314,6 +353,11 @@ def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None) ->
         return block[:anchor.end()] + ''.join(lines) + block[anchor.end():]
 
     text = SECTIONS.sub(lambda m: component(m.group()), text)
+    if after_moonholder and p.character == 'RoverFemale' and hashes == {'b7b6abd9'}:
+        repaired = repair_rover_shape_keys(text, list(SECTIONS.finditer(text)))
+        if repaired != text:
+            p.changes.append('RoverFemale: update legacy shape key batch offset and dispatch size')
+            text = repaired
     p.after = text.encode(encoding)
     
     if data.startswith(b'\xfe\xff'):
@@ -353,7 +397,7 @@ def ini_files(root: Path):
                     yield path
 
 
-def scan(root: Path, db: dict) -> list[Plan]:
+def scan(root: Path, db: dict, *, after_moonholder: bool = False) -> list[Plan]:
     validate_database(db)
     root = root.resolve(strict=True)
     if not root.is_dir():
@@ -369,7 +413,7 @@ def scan(root: Path, db: dict) -> list[Plan]:
         text, _ = decode(path.read_bytes())
         if re.search(r'^namespace[ \t]*=[ \t]*RabbitFX[ \t]*\r?$', text, re.M | re.I):
             continue
-        p = plan_bytes(path.read_bytes(), db, rabbit, path.parent)
+        p = plan_bytes(path.read_bytes(), db, rabbit, path.parent, after_moonholder=after_moonholder)
         p.path = path
         plans.append(p)
     return plans
@@ -575,7 +619,7 @@ def report(plans: list[Plan], root: Path, db_bytes: bytes, db: dict, destination
     save_json(destination / 'report.json', {
         'tool': VERSION, 'database_version': db.get('version', {}).get('current_version'),
         'database_sha256': digest(db_bytes), 'files': results,
-        'scope': 'Texture hashes and conservative RabbitFX injection only; no model/expression repair',
+        'scope': 'Texture bindings and any shape key repairs listed per file',
     })
     (destination / 'changes.diff').write_bytes(''.join(diffs).encode('utf-8'))
 
@@ -992,7 +1036,7 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         inventory, rabbits = fast_inventory(root)
         rules = mod_rule_signatures(root, db, inventory)
     cache_path = database.resolve().parent / 'processed-mods.json'
-    context = {'root': str(root.resolve()), 'logic': 'full-repair-v5', 'global_rules': global_rules(db),
+    context = {'root': str(root.resolve()), 'logic': 'full-repair-v7', 'global_rules': global_rules(db),
                'moonholder': MOONHOLDER_SHA256,
                'rabbitfx': {name: inventory[name] for name in sorted(rabbits)}}
     cached = {}
@@ -1047,8 +1091,8 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         if returncode or not finishes or not finishes[-1].get('success') or finishes[-1].get('summary', {}).get('failure_count', 0):
             raise ValueError(f'Moonholder repair failed; originals unchanged. Details: {destination}')
         print('Moonholder stage verified. Running RabbitFX texture stage...', flush=True)
-        with activity('3/4 RabbitFX texture processing on temporary copies'):
-            plans = scan(stage, db)
+        with activity('3/4 Texture and shape key processing on temporary copies'):
+            plans = scan(stage, db, after_moonholder=True)
             report(plans, stage, raw, db, destination / 'textures')
             for p in plans:
                 if p.after != p.before:
