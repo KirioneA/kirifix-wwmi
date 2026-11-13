@@ -42,7 +42,7 @@ try {
     Get-ChildItem -LiteralPath $logDir -Filter 'run-*.log' -File |
         Sort-Object Name -Descending | Select-Object -Skip 3 |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
-    Write-Host 'KiriFix WWMI 0.3.1'
+    Write-Host 'KiriFix WWMI 0.3.2'
     Write-Host ('Started: ' + (Get-Date -Format o))
     Write-Host ('Log: ' + $logPath)
     $mode = $env:KIRIFIX_MODE
@@ -63,6 +63,11 @@ try {
     $runtime = $null
     $runtimeArgs = @()
     $candidates = @()
+    $portable = Join-Path $scriptRoot 'runtime\python.exe'
+    if (Test-Path -LiteralPath $portable -PathType Leaf) {
+        Assert-LocalPath $portable
+        $candidates += @{ Path = $portable; Prefix = @() }
+    }
     foreach ($name in @('py','python','python3')) {
         $command = Get-Command $name -ErrorAction SilentlyContinue
         if ($command) {
