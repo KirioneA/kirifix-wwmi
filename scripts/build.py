@@ -1,23 +1,29 @@
 from pathlib import Path
+import shutil
 
 root = Path(__file__).resolve().parents[1]
-source = (root / 'src/kirifix.py').read_text(encoding='utf-8')
-bootstrap = (root / 'src/launcher.ps1').read_text(encoding='utf-8')
-license_text = (root / 'LICENSE').read_text(encoding='utf-8')
-bootstrap = '<#\n' + license_text + '\n#>\n' + bootstrap
 header = r'''@echo off
-setlocal
+setlocal DisableDelayedExpansion
 chcp 65001 >nul
 set "KIRIFIX_SELF=%~f0"
 set "KIRIFIX_MODS=%~1"
 set "KIRIFIX_MODE=%~2"
 set "KIRIFIX_JOURNAL=%~3"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$s=[IO.File]::ReadAllText($env:KIRIFIX_SELF); $m=[char]35+'<KIRIFIX_POWERSHELL>'; & ([scriptblock]::Create($s.Substring($s.IndexOf($m)+$m.Length)))"
+set "KIRIFIX_PACKAGE=%~dp0KiriFix-WWMI\"
+for %%I in ("%~dp0.") do if /i "%%~nxI"=="KiriFix-WWMI" set "KIRIFIX_PACKAGE=%~dp0"
+if not exist "%KIRIFIX_PACKAGE%runtime\python.exe" (
+    echo ERROR: Extract the complete KiriFix-WWMI folder, including its runtime.
+    exit /b 2
+)
+if not exist "%KIRIFIX_PACKAGE%kirifix.py" (
+    echo ERROR: Extract the complete KiriFix-WWMI folder, including kirifix.py.
+    exit /b 2
+)
+"%KIRIFIX_PACKAGE%runtime\python.exe" -I -X utf8 -u "%KIRIFIX_PACKAGE%kirifix.py" --windows-launcher
 exit /b %ERRORLEVEL%
-#<KIRIFIX_POWERSHELL>
 '''
-result = header + bootstrap.replace('__PYTHON_SOURCE__', source.rstrip())
-destination = root / 'dist/KiriFix-WWMI.cmd'
-destination.parent.mkdir(exist_ok=True)
-destination.write_bytes(result.replace('\r\n', '\n').replace('\n', '\r\n').encode('utf-8'))
-print(f'Built {destination.name}')
+destination = root / 'dist'
+destination.mkdir(exist_ok=True)
+(destination / 'KiriFix-WWMI.cmd').write_bytes(header.replace('\n', '\r\n').encode('ascii'))
+shutil.copyfile(root / 'src/kirifix.py', destination / 'kirifix.py')
+print('Built KiriFix-WWMI.cmd and kirifix.py')

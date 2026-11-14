@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import difflib
@@ -51,8 +51,9 @@ class PathIssue(ValueError):
         self.code = code
 
 
-def emit_support(event: str, *counts: int) -> None:
-    print('KIRIFIX_SUPPORT', event, *counts, flush=True)
+def emit_support(support: list[str] | None, event: str, *counts: int) -> None:
+    if support is not None:
+        support.append(SUPPORT_MESSAGES[event].format(*counts))
 
 
 def support_error(exc: Exception) -> str | None:
@@ -916,10 +917,9 @@ def report(plans: list[Plan], root: Path, db_bytes: bytes, db: dict, destination
     (destination / 'changes.diff').write_bytes(''.join(diffs).encode('utf-8'))
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, support: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='KiriFix WWMI: known texture fixes, backups and rollback')
     parser.add_argument('--version', action='version', version=VERSION)
-    parser.add_argument('--support-events', action='store_true', help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest='command', required=True)
     up = sub.add_parser('update-db', help='Explicitly download official JSON database (no programs)')
     up.add_argument('--database', type=Path, default=Path('data/moonholder.json'))
@@ -953,18 +953,15 @@ def main(argv=None) -> int:
                 rollback(args.mods, args.journal)
             print('Rollback verified.')
             return 0
-        if args.support_events:
-            emit_support('check-mods')
+        emit_support(support, 'check-mods')
         root = args.mods.resolve(strict=True)
         # os.walk ignores an inaccessible root by default.
         with os.scandir(root):
             pass
         if not has_wwmi_components(root):
-            if args.support_events:
-                emit_support('no-mods')
+            emit_support(support, 'no-mods')
             return location_warning()
-        if args.support_events:
-            emit_support('database')
+        emit_support(support, 'database')
         if args.command in ('run', 'full-run'):
             print(f'Automatic run. Mods: {root}', flush=True)
             if args.command == 'full-run':
@@ -993,7 +990,7 @@ def main(argv=None) -> int:
         validate_database(db)
         print(f'Database version: {db.get("version", {}).get("current_version")}; SHA256: {digest(raw)}', flush=True)
         if args.command == 'full-run':
-            full_run(root, args.database, args.state, args.reports, force=args.force, support=args.support_events)
+            full_run(root, args.database, args.state, args.reports, force=args.force, support=support)
             return 0
         if args.command == 'apply':
             if not args.yes:
@@ -1005,8 +1002,7 @@ def main(argv=None) -> int:
                 raise ValueError(f'Game/database version mismatch: {args.game_version} vs {version}; no writes')
         plans = scan(root, db)
         if not any(p.character is not None for p in plans):
-            if args.support_events:
-                emit_support('no-mods')
+            emit_support(support, 'no-mods')
             return location_warning()
         for p in plans:
             print(f'[{p.character or "unrecognized"}] {p.path.relative_to(root)}', flush=True)
@@ -1018,8 +1014,7 @@ def main(argv=None) -> int:
         report(plans, root, raw, db, destination)
         changed = sum(p.before != p.after for p in plans)
         warnings = sum(len(p.warnings) for p in plans)
-        if args.support_events:
-            emit_support('scanned', len(plans), changed, warnings)
+        emit_support(support, 'scanned', len(plans), changed, warnings)
         print(f'Scanned: {len(plans)} INI; proposed changes: {changed}; warnings: {warnings}')
         print(f'Report: {destination / "report.json"}\nDiff: {destination / "changes.diff"}')
         if args.command in ('apply', 'run') and changed:
@@ -1031,8 +1026,8 @@ def main(argv=None) -> int:
             print('No automatic changes needed; inspect warnings above.')
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
-        if args.support_events and (code := support_error(exc)):
-            emit_support(code)
+        if code := support_error(exc):
+            emit_support(support, code)
         print(f'ERROR: {exc}', file=sys.stderr)
         return 2
 
@@ -1344,7 +1339,7 @@ def global_rules(db: dict) -> str:
 
 
 def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool = False,
-             *, support: bool = False) -> None:
+             *, support: list[str] | None = None) -> None:
     started = time.monotonic()
     raw = database.read_bytes()
     db = json.loads(raw)
@@ -1374,11 +1369,11 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
     dirty = {name for name, signature in inventory.items()
              if not isinstance(cached.get(name), dict) or cached[name].get('files') != signature
              or cached[name].get('rules') != rules[name]}
-    if support:
-        emit_support('inventory', len(inventory) - len(dirty), len(dirty))
+    if support is not None:
+        emit_support(support, 'inventory', len(inventory) - len(dirty), len(dirty))
         cached_skips = sum(bool(cached[name].get('skipped')) for name in inventory.keys() - dirty)
         if cached_skips:
-            emit_support('missing-resources', cached_skips)
+            emit_support(support, 'missing-resources', cached_skips)
     print(f'CACHE: {len(inventory) - len(dirty)}/{len(inventory)} mod folders unchanged; {len(dirty)} require processing.', flush=True)
     for name in sorted(inventory.keys() - dirty):
         if cached[name].get('skipped'):
@@ -1388,8 +1383,7 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         print(f'FAST RUN: No changed mods or repair rules. Nothing copied or modified. Total: {time.monotonic() - started:.2f}s', flush=True)
         return
     runtime = database.resolve().parent.parent / '.runtime'
-    if support:
-        emit_support('moonholder-setup')
+    emit_support(support, 'moonholder-setup')
     with activity('Checking/downloading Moonholder CLI'):
         executable = moonholder_cli(runtime)
     destination = reports.resolve() / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8])
@@ -1398,44 +1392,39 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         stage = Path(temporary) / 'Mods'
         stage.mkdir()
         skipped = []
-        if support:
-            emit_support('staging')
+        emit_support(support, 'staging')
         with activity('1/4 Copying mod resources and verifying checksums; originals unchanged'):
             try:
                 originals = prepare_stage(root, stage, skipped, selected=dirty | rabbits)
             finally:
-                if support and skipped:
-                    emit_support('missing-resources', len(skipped))
+                if skipped:
+                    emit_support(support, 'missing-resources', len(skipped))
                 save_json(destination / 'skipped-mods.json', skipped)
         config = Path(temporary) / 'config.json'
         config.write_bytes(raw)
         print(f'Moonholder stage: {len(originals)} input files copied. Originals remain untouched.', flush=True)
-        if support:
-            emit_support('moonholder')
+        emit_support(support, 'moonholder')
         with activity('2/4 Moonholder model and bone repair on temporary copies'):
             returncode, events = run_moonholder(
                 [str(executable), '--path', str(stage), '--config', str(config), '--format', 'json'],
                 temporary, destination)
         finishes = [e for e in events if isinstance(e, dict) and e.get('event') == 'finish']
         if returncode or not finishes or not finishes[-1].get('success') or finishes[-1].get('summary', {}).get('failure_count', 0):
-            if support:
-                emit_support('moonholder-failed')
+            emit_support(support, 'moonholder-failed')
             raise ValueError(f'Moonholder repair failed; originals unchanged. Details: {destination}')
         print('Moonholder stage verified. Running RabbitFX texture stage...', flush=True)
-        if support:
-            emit_support('textures')
+        emit_support(support, 'textures')
         with activity('3/4 Texture and shape key processing on temporary copies'):
             plans = scan(stage, db, after_moonholder=True)
-            if support:
-                emit_support('scanned', len(plans), sum(p.after != p.before for p in plans),
+            if support is not None:
+                emit_support(support, 'scanned', len(plans), sum(p.after != p.before for p in plans),
                              sum(len(p.warnings) for p in plans))
-                emit_support('rover-eyes', sum(ROVER_SHAPE_KEY_CHANGE in p.changes for p in plans))
+                emit_support(support, 'rover-eyes', sum(ROVER_SHAPE_KEY_CHANGE in p.changes for p in plans))
             report(plans, stage, raw, db, destination / 'textures')
             for p in plans:
                 if p.after != p.before:
                     atomic_write(p.path, p.after)
-        if support:
-            emit_support('applying')
+        emit_support(support, 'applying')
         with activity('4/4 Validating originals, saving backups and applying changes'):
             journal = commit_full(root, stage, originals, state)
         save_json(destination / 'full-report.json', {'tool': VERSION, 'root': str(root),
@@ -1449,8 +1438,7 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         changed_paths = set()
         if journal:
             changed_paths = {e['path'] for e in json.loads(journal.read_bytes())['entries']}
-        if support:
-            emit_support('applied', len(changed_paths))
+        emit_support(support, 'applied', len(changed_paths))
         for name in inventory:
             old_unwritten = {p: v for p, v in inventory[name].items() if p not in changed_paths}
             new_unwritten = {p: v for p, v in current.get(name, {}).items() if p not in changed_paths}
@@ -1469,5 +1457,164 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         print(f'TIME: Full run total: {time.monotonic() - started:.2f}s', flush=True)
 
 
+SUPPORT_MESSAGES = {
+    'check-mods': 'Checking the selected Mods folder.',
+    'no-mods': 'No compatible WWMI mods were detected in the selected folder. Check the Mods folder or drag it onto the CMD.',
+    'database': 'Checking the repair database.',
+    'inventory': 'Mod folders: {} cached, {} to process.',
+    'moonholder-setup': 'Checking the Moonholder repair tool.',
+    'staging': 'Checking and copying mod resources.',
+    'missing-resources': 'Skipped {} incomplete mod folder(s) with missing resources. Extract the full mod archive and keep its folder structure.',
+    'moonholder': 'Running Moonholder model repairs.',
+    'moonholder-failed': 'Moonholder reported a repair failure before changes were applied.',
+    'textures': 'Checking texture bindings and shape keys.',
+    'scanned': 'Scanned {} INI file(s), {} with proposed changes and {} warning(s).',
+    'rover-eyes': 'Legacy female Rover eye fixes prepared: {}.',
+    'applying': 'Validating backups and applying changes.',
+    'applied': 'Applied and verified {} file change(s).',
+    'outside-mods': 'A file reference points outside the selected Mods folder.',
+    'linked-path': 'A file reference uses a linked file or folder.',
+    'invalid-path': 'A file reference uses a path that Windows or KiriFix cannot use.',
+    'path-too-long': 'A file path is too long. Use a less deeply nested Mods folder.',
+    'missing-path': 'A required file or folder is missing or could not be opened as a directory.',
+    'access-denied': 'Access to a required file or folder was denied.',
+    'file-in-use': 'A required file is in use by another process.',
+    'disk-full': 'There is insufficient space to write the required files.',
+    'timeout': 'The repair tool timed out.',
+}
+
+
+@contextmanager
+def windows_launch_lock():
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.CreateMutexW.restype = wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.CreateMutexW(None, False, r'Local\KiriFix-WWMI')
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    acquired = False
+    try:
+        result = kernel.WaitForSingleObject(handle, 0)
+        if result == 258:
+            raise ValueError('KiriFix WWMI is already running in this Windows session.')
+        if result not in (0, 128):
+            raise ctypes.WinError(ctypes.get_last_error())
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            kernel.ReleaseMutex(handle)
+        kernel.CloseHandle(handle)
+
+
+def assert_local(path: Path) -> None:
+    for part in (*reversed(path.parents), path):
+        try:
+            linked = is_link(part)
+        except FileNotFoundError:
+            continue
+        if linked:
+            raise PathIssue('linked-path', f'Linked installation item: {part}')
+
+
+class LaunchOutput:
+    def __init__(self, console, log):
+        self.console = console
+        self.log = log
+
+    def write(self, value: str) -> int:
+        self.console.write(value)
+        return self.log.write(value)
+
+    def flush(self) -> None:
+        self.console.flush()
+        self.log.flush()
+
+
+def launch_repair(root: Path, default_mods: Path, support: list[str]) -> int:
+    mode = os.environ.get('KIRIFIX_MODE', '').strip().lower() or 'run'
+    if mode not in ('run', 'scan', 'rollback', 'force', 'update'):
+        support.append('The requested launch mode is not supported.')
+        raise ValueError('Supported modes: run, scan, rollback, force, update.')
+    support.append(f'Mode: {mode}')
+    supplied = os.environ.get('KIRIFIX_MODS', '')
+    supplied = supplied if supplied.strip() else ''
+    support.append('Mods folder source: ' + ('supplied folder.' if supplied else 'launcher location.'))
+    mods = Path(supplied).absolute() if supplied else default_mods
+    if not mods.is_dir():
+        support.append('The selected Mods folder does not exist or is not a directory. Drag your Mods folder onto the CMD.')
+        raise ValueError(f'Mods folder not found: {mods}. Drag your Mods folder onto this CMD file.')
+    mods = mods.resolve(strict=True)
+    print(f'Mode: {mode}; Mods: {mods}', flush=True)
+    if mode == 'rollback':
+        journal = os.environ.get('KIRIFIX_JOURNAL', '')
+        if not journal:
+            support.append('Rollback requires a journal file.')
+            raise ValueError('Rollback requires journal path as third argument.')
+        return main(['rollback', str(mods), str(Path(journal).absolute())], support=support)
+    arguments = [mode if mode == 'scan' else 'full-run', str(mods),
+                 '--database', str(root / 'data/moonholder.json'), '--reports', str(root / 'reports')]
+    if mode != 'scan':
+        arguments += ['--state', str(root / 'backups')]
+    if mode == 'force':
+        arguments.append('--force')
+    if mode == 'update':
+        arguments.append('--refresh-db')
+    return main(arguments, support=support)
+
+
+def windows_launcher() -> int:
+    launcher = Path(os.environ['KIRIFIX_SELF']).absolute()
+    root = Path(__file__).absolute().parent
+    default_mods = launcher.parent.parent if launcher.parent.name.lower() == 'kirifix-wwmi' else launcher.parent
+    logs = root / 'logs'
+    support_path = logs / 'KiriFix-support.txt'
+    support = [f'KiriFix WWMI {VERSION} | Support report']
+    code = 2
+    try:
+        with windows_launch_lock():
+            assert_local(launcher)
+            for path in (support_path, root / 'data/moonholder.json', root / 'data/moonholder.source.json',
+                         root / 'data/processed-mods.json', root / 'reports', root / 'backups', root / '.runtime'):
+                assert_local(path)
+            logs.mkdir(parents=True, exist_ok=True)
+            started = datetime.now(timezone.utc)
+            log_path = logs / (started.strftime('run-%Y%m%d-%H%M%S-%f-') + uuid.uuid4().hex[:8] + '.log')
+            with log_path.open('x', encoding='utf-8', buffering=1) as log:
+                with redirect_stdout(LaunchOutput(sys.stdout, log)), redirect_stderr(LaunchOutput(sys.stderr, log)):
+                    print(f'KiriFix WWMI {VERSION}\nStarted: {started.isoformat()}\nLog: {log_path}', flush=True)
+                    try:
+                        for expired in sorted(logs.glob('run-*.log'), reverse=True)[3:]:
+                            expired.unlink()
+                        code = launch_repair(root, default_mods, support)
+                    except (OSError, ValueError) as exc:
+                        if message := SUPPORT_MESSAGES.get(support_error(exc)):
+                            support.append(message)
+                        print(f'ERROR: {exc}', file=sys.stderr, flush=True)
+                    result = {0: 'completed.', 3: 'no supported WWMI mods detected.'}
+                    support += ['Result: ' + result.get(code, 'stopped with an error.'), f'Exit code: {code}']
+                    try:
+                        atomic_write(support_path, ('\n'.join(support) + '\n').encode('utf-8'))
+                        print(r'For support, share KiriFix-WWMI\logs\KiriFix-support.txt.', flush=True)
+                    except OSError:
+                        print('WARNING: Could not save the shareable report.', flush=True)
+                    print(f'Finished: {datetime.now(timezone.utc).isoformat()}; exit code: {code}', flush=True)
+    except (OSError, ValueError) as exc:
+        print(f'ERROR: {exc}', flush=True)
+    if code == 3 and sys.stdin.isatty():
+        try:
+            input('Press Enter to close')
+        except EOFError:
+            pass
+    return code
+
+
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(windows_launcher() if sys.argv[1:] == ['--windows-launcher'] else main())

@@ -5,11 +5,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ARCHIVE = Path(os.environ.get('KIRIFIX_TEST_RUNTIME_ARCHIVE', ROOT.parent / 'dist/kirifix-wwmi-034.zip'))
 
 
 @unittest.skipUnless(os.name == 'nt', 'Windows launcher')
+@unittest.skipUnless(RUNTIME_ARCHIVE.is_file(), 'Set KIRIFIX_TEST_RUNTIME_ARCHIVE to a release ZIP with portable Python')
 class LauncherSecurityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -24,6 +27,11 @@ class LauncherSecurityTests(unittest.TestCase):
         self.mods = self.folder / 'Mods'
         self.mods.mkdir()
         self.service = self.folder / 'KiriFix-WWMI'
+        with ZipFile(RUNTIME_ARCHIVE) as archive:
+            for member in archive.namelist():
+                if member.startswith('KiriFix-WWMI/runtime/'):
+                    archive.extract(member, self.folder)
+        (self.service / 'kirifix.py').write_bytes((ROOT / 'dist/kirifix.py').read_bytes())
         (self.service / 'data').mkdir(parents=True)
         (self.service / 'data/moonholder.json').write_text(json.dumps({
             'characters': {'Test': {'main_hashes': [{'new': '11111111'}]}},
@@ -73,15 +81,21 @@ class LauncherSecurityTests(unittest.TestCase):
         self.assertIn('Exit code: 2', report)
 
     def test_local_python_module_cannot_execute(self):
-        runtime = self.service / '.runtime'
-        runtime.mkdir()
         marker = self.folder / 'imported.txt'
-        (runtime / 'json.py').write_text(
+        (self.service / 'json.py').write_text(
             f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\nraise SystemExit(0)\n")
         result = self.launch()
         self.assertFalse(marker.exists(), result.stdout)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('READ ONLY', result.stdout)
+
+    def test_cmd_launches_readable_python_source_without_powershell(self):
+        contents = self.cmd.read_text().lower()
+        for token in ('powershell', 'executionpolicy', 'scriptblock'):
+            self.assertNotIn(token, contents)
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertFalse((self.service / '.runtime/kirifix.py').exists())
 
     def test_unicode_mod_paths_with_legacy_console_encoding(self):
         mod = self.mods / '\u5fc3-\u041c\u043e\u0434-\U0001f431'

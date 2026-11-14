@@ -8,8 +8,7 @@ Version: **0.3.4 — Experimental**. This project is independent of Moonholder a
 
 ## Requirements
 
-- Windows with Windows PowerShell 5.1.
-- The Windows x64 release includes a portable Python runtime.
+- Windows x64. The release includes a portable Python runtime.
 - WWMI and RabbitFX installed separately.
 - Internet access for the first database download.
 
@@ -97,7 +96,7 @@ startup includes PowerShell/Python startup time in addition to the helper timing
 | `KiriFix-WWMI/backups/` | Original INI bytes and recovery journals; never automatically deleted |
 | `KiriFix-WWMI/reports/` | Proposed changes, warnings and diffs |
 | `KiriFix-WWMI/data/` | Downloaded database and source metadata |
-| `KiriFix-WWMI/.runtime/` | Python source extracted from the CMD |
+| `KiriFix-WWMI/.runtime/` | Verified Moonholder CLI |
 
 The `KiriFix-WWMI` folder is excluded from scanning. Old `KiriFix-WWMI-Logs` and
 `Logs-KiriFix` service folders are also excluded. Existing backups and service folders from older
@@ -109,8 +108,8 @@ messages in this file and excludes account and computer names, paths, mod names 
 Keep the console logs, detailed reports and backups for local troubleshooting.
 Network requests download the official database and the pinned official CLI executable. No mod data is uploaded.
 
-The CMD launcher uses Python isolated mode to prevent imports from the extracted
-script directory and Python environment overrides. It rejects existing linked
+The CMD launcher runs the included `kirifix.py` with portable Python in isolated mode
+to prevent imports from the script directory and Python environment overrides. It rejects existing linked
 service paths and allows only one CMD instance per Windows session. These checks
 do not protect against an attacker who can modify the CMD itself or actively
 change its folder during execution. Safety failures before logging starts are
@@ -167,8 +166,9 @@ python -m unittest discover -s tests -v
 python scripts/build.py
 ```
 
-The build creates `dist/KiriFix-WWMI.cmd` from readable source files.
-The release archive should contain the CMD, this README, LICENSE and THIRD_PARTY.md.
+The build creates `dist/KiriFix-WWMI.cmd` and `dist/kirifix.py`.
+The release archive includes both files, the portable Python runtime, this README, LICENSE and THIRD_PARTY.md.
+Set `KIRIFIX_TEST_RUNTIME_ARCHIVE` to an existing release ZIP with the portable runtime to run the Windows launcher tests.
 The database and other third-party software are not bundled.
 
 ## Credits and licensing

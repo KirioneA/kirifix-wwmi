@@ -254,20 +254,19 @@ class FullRepairTests(unittest.TestCase):
         private.mkdir()
         config = private / 'Private File.ini'
         (self.root / 'mod.ini').rename(config)
-        args = ['--support-events', 'full-run', str(self.root), '--database', str(database),
+        args = ['full-run', str(self.root), '--database', str(database),
                 '--reports', str(self.base / 'reports')]
 
-        for reference, expected in [('Private Texture.dds', 'missing-resources 1'),
-                                    ('../../Private Texture.dds', 'outside-mods')]:
+        for reference, expected in [('Private Texture.dds', 'Skipped 1 incomplete mod folder'),
+                                    ('../../Private Texture.dds', 'A file reference points outside the selected Mods folder.')]:
             with self.subTest(reference=reference):
                 config.write_text(f'[TextureOverrideComponent0]\nhash = 11111111\n[Resource]\nfilename = {reference}\n')
-                output = io.StringIO()
+                events = []
                 with patch.object(h, 'check_database'), patch.object(h, 'moonholder_cli', return_value=self.base / 'cli.exe'), \
-                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
-                    result = h.main(args)
-                events = [line for line in output.getvalue().splitlines() if line.startswith('KIRIFIX_SUPPORT ')]
+                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    result = h.main(args, support=events)
                 self.assertEqual(result, 2)
-                self.assertIn(f'KIRIFIX_SUPPORT {expected}', events)
+                self.assertIn(expected, '\n'.join(events))
                 self.assertNotIn('Private', '\n'.join(events))
                 self.assertNotIn(str(self.base), '\n'.join(events))
 
