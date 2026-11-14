@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0 — Direct Python launcher
+
+- Launch the readable `kirifix.py` directly with the bundled portable Python runtime.
+- Write console logs and shareable support reports directly from Python.
+- Recheck all enabled mods on the first run after upgrading KiriFix and explain the cache reset in the support report.
+
 ## 0.3.4 — Legacy texture compatibility and shareable support logs
 
 - Repair recognized legacy hair and outfit texture layouts while preserving supported outfit toggles.

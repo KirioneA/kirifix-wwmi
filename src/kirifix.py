@@ -22,7 +22,7 @@ import urllib.request
 import urllib.error
 import uuid
 
-VERSION = '0.3.4'
+VERSION = '0.4.0'
 MOONHOLDER_URL = 'https://github.com/Moonholder/Wuwa_Mod_Fixer/releases/download/v3.7.0/wuwa-mod-cli_v3.7.0.exe'
 MOONHOLDER_SHA256 = '737c71507a8bc43a0794cace0aba07bccee6967de95cfb29291c9700cc85a370'
 DATABASE_URL = 'https://raw.githubusercontent.com/Moonholder/Wuwa_Mod_Fixer/main/config.json'
@@ -1347,7 +1347,7 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         inventory, rabbits = fast_inventory(root)
         rules = mod_rule_signatures(root, db, inventory)
     cache_path = database.resolve().parent / 'processed-mods.json'
-    context = {'root': str(root.resolve()), 'logic': 'full-repair-v8', 'global_rules': global_rules(db),
+    context = {'root': str(root.resolve()), 'tool_version': VERSION, 'logic': 'full-repair-v8', 'global_rules': global_rules(db),
                'moonholder': MOONHOLDER_SHA256,
                'rabbitfx': {name: inventory[name] for name in sorted(rabbits)}}
     cached = {}
@@ -1357,13 +1357,9 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
             if isinstance(saved, dict) and saved.get('context') == context and isinstance(saved.get('mods'), dict):
                 cached = saved.get('mods', {})
             elif isinstance(saved, dict) and isinstance(saved.get('context'), dict) and isinstance(saved.get('mods'), dict):
-                previous = dict(saved['context'])
-                if context['logic'] == 'full-repair-v2' and previous.pop('database', None) == digest(raw) and previous.pop('logic', None) == '0.3.0-preview.4':
-                    expected = {key: value for key, value in context.items() if key not in ('logic', 'global_rules')}
-                    if previous == expected:
-                        cached = {name: dict(record, rules=rules.get(name)) for name, record in saved['mods'].items()
-                                  if isinstance(record, dict)}
-                        print('CACHE: Migrated verified preview.4 results; repair logic is unchanged.', flush=True)
+                if saved['context'].get('tool_version') != VERSION:
+                    emit_support(support, 'cache-version-changed')
+                    print('CACHE: ' + SUPPORT_MESSAGES['cache-version-changed'], flush=True)
         except (OSError, ValueError):
             print('WARNING: Invalid processing cache; full verification required.', flush=True)
     dirty = {name for name, signature in inventory.items()
@@ -1461,6 +1457,7 @@ SUPPORT_MESSAGES = {
     'check-mods': 'Checking the selected Mods folder.',
     'no-mods': 'No compatible WWMI mods were detected in the selected folder. Check the Mods folder or drag it onto the CMD.',
     'database': 'Checking the repair database.',
+    'cache-version-changed': 'The processing cache belongs to a different KiriFix version. Rechecking all mods.',
     'inventory': 'Mod folders: {} cached, {} to process.',
     'moonholder-setup': 'Checking the Moonholder repair tool.',
     'staging': 'Checking and copying mod resources.',

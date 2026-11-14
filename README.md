@@ -4,7 +4,7 @@ An experimental one-click Wuthering Waves mod repair helper combining the offici
 
 Created and maintained by **Kiri1**.
 
-Version: **0.3.4 — Experimental**. This project is independent of Moonholder and Caverabbit.
+Version: **0.4.0 — Experimental**. This project is independent of Moonholder and Caverabbit.
 
 ## Requirements
 
@@ -33,6 +33,10 @@ If you move the CMD out into Mods, it scans the CMD's containing folder and keep
 the `KiriFix-WWMI` subfolder for service files. Both layouts use the same backups and cache.
 It does not search AppData or other drives. Drag another Mods folder onto the CMD to override
 the target. For desktop access, create a shortcut to the installed CMD instead of moving it.
+
+To upgrade, extract the complete new `KiriFix-WWMI` folder over the existing folder and replace
+files when prompted. Launch the CMD from the updated folder. Your existing backups are
+available for rollback, and the first run with the new version rechecks all enabled mods.
 
 ```text
 Mods/
@@ -67,9 +71,9 @@ mods are staged separately; RabbitFX dependencies are included when needed. Miss
 resource warnings remain visible even when an incomplete folder is cached.
 
 Metadata checks do not detect edits that preserve all recorded metadata. Use force
-mode for a full recheck. The preview.4 cache is migrated only if its database checksum, root and dependencies
-match. Other incompatible caches require a new full run and can take longer. This cache is an optimization,
-not a security verification of mod content.
+mode for a full recheck. A cache from another KiriFix version or an older cache without
+a version marker triggers a full recheck. The next successful run with unchanged files
+and repair rules can reuse the refreshed cache.
 
 Normal runs check database freshness once per day. The network socket timeout is
 three seconds. If the server responds HTTP 304, no database body is downloaded.
@@ -85,7 +89,7 @@ wall-clock timeout for slow streaming responses.
 ```
 
 Stage timings and total helper time are printed to the launch log. The entire CMD
-startup includes PowerShell/Python startup time in addition to the helper timing.
+startup includes Python startup time in addition to the helper timing.
 
 ## Files created locally
 

@@ -148,13 +148,13 @@ class FullRepairTests(unittest.TestCase):
             h.run_moonholder([sys.executable, '-I', '-c', 'import time; time.sleep(30)'],
                             str(self.base), destination, timeout=0.01)
 
-    def cached_run(self, force=False):
+    def cached_run(self, force=False, support=None):
         db = self.base / 'data/moonholder.json'
         if not db.exists():
             db.parent.mkdir()
             db.write_text(json.dumps({'characters': {'Test': {'main_hashes': [{'new': '11111111'}]}}}))
         (self.base / '.runtime').mkdir(exist_ok=True)
-        h.full_run(self.root, db, self.base / 'backups', self.base / 'reports', force=force)
+        h.full_run(self.root, db, self.base / 'backups', self.base / 'reports', force=force, support=support)
 
     def test_unchanged_cache_skips_cli_and_copy(self):
         finish = (0, [{'event': 'finish', 'success': True}])
@@ -163,6 +163,19 @@ class FullRepairTests(unittest.TestCase):
             with patch.object(h, 'prepare_stage', side_effect=AssertionError('Must not copy unchanged mods')):
                 self.cached_run()
             self.assertEqual(run.call_count, 1)
+
+    def test_release_upgrade_reprocesses_unchanged_mods_once(self):
+        finish = (0, [{'event': 'finish', 'success': True}])
+        with patch.object(h, 'moonholder_cli', return_value=self.base / 'cli.exe'), patch.object(h, 'run_moonholder', return_value=finish) as run:
+            with patch.object(h, 'VERSION', '0.3.4'):
+                self.cached_run()
+            support = []
+            self.cached_run(support=support)
+            self.assertEqual(run.call_count, 2)
+            self.assertIn('The processing cache belongs to a different KiriFix version. Rechecking all mods.', support)
+            self.assertIn('Mod folders: 0 cached, 1 to process.', support)
+            self.cached_run()
+            self.assertEqual(run.call_count, 2)
 
     def test_resource_changes_added_files_and_force_invalidate_cache(self):
         finish = (0, [{'event': 'finish', 'success': True}])
@@ -353,6 +366,7 @@ class FullRepairTests(unittest.TestCase):
             path = self.base / 'data/processed-mods.json'
             saved = json.loads(path.read_bytes())
             saved['context'].pop('global_rules')
+            saved['context'].pop('tool_version')
             saved['context']['logic'] = '0.3.0-preview.4'
             saved['context']['database'] = h.digest((self.base / 'data/moonholder.json').read_bytes())
             for record in saved['mods'].values():
@@ -360,7 +374,9 @@ class FullRepairTests(unittest.TestCase):
             h.save_json(path, saved)
             self.cached_run()
             self.assertEqual(upstream.call_count, 2)
-            self.assertIn('rules', json.loads(path.read_bytes())['mods']['.'])
+            rebuilt = json.loads(path.read_bytes())
+            self.assertIn('rules', rebuilt['mods']['.'])
+            self.assertEqual(rebuilt['context']['tool_version'], h.VERSION)
             self.cached_run()
             self.assertEqual(upstream.call_count, 2)
 
