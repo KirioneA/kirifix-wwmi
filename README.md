@@ -4,7 +4,7 @@ An experimental one-click Wuthering Waves mod repair helper combining the offici
 
 Created and maintained by **Kiri1**.
 
-Version: **0.3.0 — Experimental**. This project is independent of Moonholder and Caverabbit.
+Version: **0.3.4 — Experimental**. This project is independent of Moonholder and Caverabbit.
 
 ## Requirements
 
@@ -28,7 +28,6 @@ The tool hashes resources in chunks; it does not retain all textures in memory.
 Progress shows four processing stages, file counters and live Moonholder completion events.
 Long operations print a working message every five seconds with elapsed time. Counters
 are per stage, not an overall percentage or an estimated completion time.
-This build is provided for testing before public release.
 
 When the CMD is inside a folder named `KiriFix-WWMI`, its parent is the default target.
 If you move the CMD out into Mods, it scans the CMD's containing folder and keeps using
@@ -93,7 +92,8 @@ startup includes PowerShell/Python startup time in addition to the helper timing
 
 | Folder | Contents |
 | --- | --- |
-| `KiriFix-WWMI/logs/run-*.log` | Output and errors from the last three launches |
+| `KiriFix-WWMI/logs/KiriFix-support.txt` | Shareable summary of the latest launch |
+| `KiriFix-WWMI/logs/run-*.log` | Private console output and errors from the last three launches |
 | `KiriFix-WWMI/backups/` | Original INI bytes and recovery journals; never automatically deleted |
 | `KiriFix-WWMI/reports/` | Proposed changes, warnings and diffs |
 | `KiriFix-WWMI/data/` | Downloaded database and source metadata |
@@ -103,9 +103,11 @@ The `KiriFix-WWMI` folder is excluded from scanning. Old `KiriFix-WWMI-Logs` and
 `Logs-KiriFix` service folders are also excluded. Existing backups and service folders from older
 versions are not moved or deleted automatically; keep old backups for rollback.
 
-Logs can contain your Windows username, computer name and local paths.
-Do not publish logs, backups or mod files without reviewing them.
-The helper does not upload them. Network requests download the official database and the pinned official CLI executable. No mod data is uploaded.
+When asking for help, share `logs/KiriFix-support.txt`. It contains the launch mode, repair stages,
+scan and repair counts, and neutral descriptions of common errors. KiriFix uses predefined
+messages in this file and excludes account and computer names, paths, mod names and raw tool output.
+Keep the console logs, detailed reports and backups for local troubleshooting.
+Network requests download the official database and the pinned official CLI executable. No mod data is uploaded.
 
 The CMD launcher uses Python isolated mode to prevent imports from the extracted
 script directory and Python environment overrides. It rejects existing linked

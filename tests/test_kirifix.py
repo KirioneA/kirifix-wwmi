@@ -33,6 +33,76 @@ INI = ('[TextureOverrideComponent3]\r\nhash = 11111111\r\n'
 
 
 class PlannerTests(unittest.TestCase):
+    def test_slot_profiles_use_proven_hashes_or_preserve_texture_selection(self):
+        profile = (
+            'ps-t0->Format == DXGI_FORMAT_BC7_UNORM && ps-t1->Format == DXGI_FORMAT_BC3_UNORM'
+            ' && ps-t2->Format == DXGI_FORMAT_R8_UNORM && ps-t3->Format == DXGI_FORMAT_BC7_UNORM_SRGB'
+            ' && ps-t4->Format == DXGI_FORMAT_BC7_UNORM_SRGB'
+        )
+        text = (
+            '[Constants]\r\nglobal $variant = 0\r\n[Present]\r\n'
+            '[Constants]\r\nglobal $object_detected = 0\r\n[Present]\r\n'
+            + INI.split('[ResourceBody]', 1)[0].replace(
+                '    run = CommandListTrigger',
+                '    $object_detected = 1\r\n    run = CommandListSetTexturesComponent3\r\n'
+                '    run = CommandListTrigger',
+            )
+            + '[CommandListTriggerResourceOverrides]\r\n'
+            + ''.join(f'CheckTextureOverride = ps-t{i}\r\n' for i in range(5))
+            + '[CommandListSetTexturesComponent3]\r\nif $object_detected == 1\r\n'
+            + f'if {profile}\r\nps-t0 = ref ResourceN\r\nps-t1 = ref ResourceL\r\n'
+            'ps-t2 = ref ResourceM\r\n'
+            'ResourceSelected = ref ps-t3\r\nrun = CommandListChoose\r\n'
+            'ps-t3 = ref ResourceSelected\r\nResourceSelected = null\r\n'
+            'else if ps-t0->Format == DXGI_FORMAT_BC7_UNORM_SRGB\r\n'
+            'ResourceSelected = ref ps-t0\r\nrun = CommandListChoose\r\n'
+            'ps-t0 = ref ResourceSelected\r\nResourceSelected = null\r\nendif\r\nendif\r\n'
+            '[ResourceSelected]\r\n'
+            '[CommandListChoose]\r\nif $variant == 0\r\nResourceSelected = ref ResourceDA\r\n'
+            'elif $variant == 1\r\nResourceSelected = ref ResourceDB\r\nendif\r\n'
+        )
+        db = copy.deepcopy(DB)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for resource in ('N', 'L', 'M', 'DA', 'DB'):
+                (base / f'{resource}.dds').touch()
+                text += f'[Resource{resource}]\r\nfilename = {resource}.dds\r\n'
+            original = text
+            for channel, texture_hash in zip('NLMD', ('12345670', '12345671', '12345672', '12345673')):
+                db['characters']['Hero']['textures'][texture_hash] = {'meta': {'id': 3, 'type': channel}}
+                selection = (
+                    'if $variant == 0\r\nthis = ResourceDA\r\nelif $variant == 1\r\n'
+                    'this = ResourceDB\r\nendif\r\n' if channel == 'D' else f'this = Resource{channel}\r\n'
+                )
+                text += (f'[TextureOverride{channel}]\r\nhash = {texture_hash}\r\n'
+                         f'if $object_detected\r\n{selection}endif\r\n')
+            hash_only = h.plan_bytes(text.encode(), db, True, base)
+            self.assertEqual(hash_only.after, text.replace(
+                '    run = CommandListSetTexturesComponent3\r\n',
+                '    ; run = CommandListSetTexturesComponent3\r\n',
+            ).encode())
+            self.assertEqual(h.plan_bytes(hash_only.after, db, True, base).after, hash_only.after)
+            db['characters']['Hero']['textures']['12345673']['derive'] = {'LOD': ['12345674']}
+            self.assertEqual(h.plan_bytes(text.encode(), db, True, base).after, text.encode())
+            del db['characters']['Hero']['textures']['12345673']['derive']
+            ambiguous = original.replace(' && ps-t1->Format', ' || ps-t1->Format', 1).encode()
+            self.assertEqual(h.plan_bytes(ambiguous, db, True, base).after, ambiguous)
+
+            with_fx = original.replace('    drawindexed', '    Resource\\RabbitFX\\FXMap = ref ResourceFX\r\n'
+                                       '    run = CommandList\\RabbitFX\\Run\r\n    drawindexed')
+            rabbit = h.plan_bytes(with_fx.encode(), db, True, base)
+            updated = rabbit.after.decode()
+            self.assertNotIn('run = CommandListSetTexturesComponent3', updated)
+            self.assertIn('Resource\\RabbitFX\\Diffuse = ref ResourceDA', updated)
+            self.assertIn('elif $variant == 1', updated)
+            self.assertIn('Resource\\RabbitFX\\Diffuse = ref ResourceDB', updated)
+            self.assertIn('Resource\\RabbitFX\\Materialmap = ref ResourceM', updated)
+            self.assertLess(updated.index('Resource\\RabbitFX\\FXMap'), updated.index('CommandList\\RabbitFX\\SetTextures'))
+            self.assertEqual(h.plan_bytes(rabbit.after, db, True, base).after, rabbit.after)
+            self.assertEqual(h.plan_bytes(original.encode(), db, False, base).after, original.encode())
+            (base / 'DB.dds').unlink()
+            self.assertEqual(h.plan_bytes(original.encode(), db, True, base).after, original.encode())
+
     def test_known_hash_and_binding_before_draw_idempotent(self):
         p = h.plan_bytes(INI.encode(), DB, True)
         self.assertEqual(p.character, 'Hero')

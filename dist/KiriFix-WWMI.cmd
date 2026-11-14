@@ -37,6 +37,9 @@ $exitCode = 2
 $transcriptStarted = $false
 $runLock = $null
 $lockHeld = $false
+$supportPath = $null
+$support = [Collections.Generic.List[string]]::new()
+$support.Add('KiriFix WWMI 0.3.4 | Support report')
 $previousOutputEncoding = [Console]::OutputEncoding
 $scriptRoot = Split-Path -Parent $env:KIRIFIX_SELF
 if ((Split-Path -Leaf $scriptRoot) -eq 'KiriFix-WWMI') {
@@ -51,11 +54,39 @@ function Assert-LocalPath([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
     while ($null -ne $item) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            $support.Add('A folder or file used by the launcher is linked. Use a regular local folder.')
             throw ('Linked paths are not supported: ' + $item.FullName)
         }
         $parent = Split-Path -Parent $item.FullName
         if (!$parent -or $parent -eq $item.FullName) { break }
         $item = Get-Item -LiteralPath $parent -Force -ErrorAction SilentlyContinue
+    }
+}
+function Add-HelperSupport([string]$Line) {
+    switch -CaseSensitive -Regex ($Line) {
+        '\AKIRIFIX_SUPPORT check-mods\z' { $support.Add('Checking the selected Mods folder.') }
+        '\AKIRIFIX_SUPPORT no-mods\z' { $support.Add('No compatible WWMI mods were detected in the selected folder. Check the Mods folder or drag it onto the CMD.') }
+        '\AKIRIFIX_SUPPORT database\z' { $support.Add('Checking the repair database.') }
+        '\AKIRIFIX_SUPPORT inventory (\d{1,9}) (\d{1,9})\z' { $support.Add("Mod folders: $($Matches[1]) cached, $($Matches[2]) to process.") }
+        '\AKIRIFIX_SUPPORT moonholder-setup\z' { $support.Add('Checking the Moonholder repair tool.') }
+        '\AKIRIFIX_SUPPORT staging\z' { $support.Add('Checking and copying mod resources.') }
+        '\AKIRIFIX_SUPPORT missing-resources (\d{1,9})\z' { $support.Add("Skipped $($Matches[1]) incomplete mod folder(s) with missing resources. Extract the full mod archive and keep its folder structure.") }
+        '\AKIRIFIX_SUPPORT moonholder\z' { $support.Add('Running Moonholder model repairs.') }
+        '\AKIRIFIX_SUPPORT moonholder-failed\z' { $support.Add('Moonholder reported a repair failure before changes were applied.') }
+        '\AKIRIFIX_SUPPORT textures\z' { $support.Add('Checking texture bindings and shape keys.') }
+        '\AKIRIFIX_SUPPORT scanned (\d{1,9}) (\d{1,9}) (\d{1,9})\z' { $support.Add("Scanned $($Matches[1]) INI file(s), $($Matches[2]) with proposed changes and $($Matches[3]) warning(s).") }
+        '\AKIRIFIX_SUPPORT rover-eyes (\d{1,9})\z' { $support.Add("Legacy female Rover eye fixes prepared: $($Matches[1]).") }
+        '\AKIRIFIX_SUPPORT applying\z' { $support.Add('Validating backups and applying changes.') }
+        '\AKIRIFIX_SUPPORT applied (\d{1,9})\z' { $support.Add("Applied and verified $($Matches[1]) file change(s).") }
+        '\AKIRIFIX_SUPPORT outside-mods\z' { $support.Add('A file reference points outside the selected Mods folder.') }
+        '\AKIRIFIX_SUPPORT linked-path\z' { $support.Add('A file reference uses a linked file or folder.') }
+        '\AKIRIFIX_SUPPORT invalid-path\z' { $support.Add('A file reference uses a path that Windows or KiriFix cannot use.') }
+        '\AKIRIFIX_SUPPORT path-too-long\z' { $support.Add('A file path is too long. Use a less deeply nested Mods folder.') }
+        '\AKIRIFIX_SUPPORT missing-path\z' { $support.Add('A required file or folder is missing or could not be opened as a directory.') }
+        '\AKIRIFIX_SUPPORT access-denied\z' { $support.Add('Access to a required file or folder was denied.') }
+        '\AKIRIFIX_SUPPORT file-in-use\z' { $support.Add('A required file is in use by another process.') }
+        '\AKIRIFIX_SUPPORT disk-full\z' { $support.Add('There is insufficient space to write the required files.') }
+        '\AKIRIFIX_SUPPORT timeout\z' { $support.Add('The repair tool timed out.') }
     }
 }
 try {
@@ -64,10 +95,15 @@ try {
     try { $lockHeld = $runLock.WaitOne(0) } catch [Threading.AbandonedMutexException] { $lockHeld = $true }
     if (!$lockHeld) { throw 'KiriFix WWMI is already running in this Windows session.' }
     Assert-LocalPath $scriptRoot
-    foreach ($relative in @('', 'logs', 'data', 'data\moonholder.json', 'data\moonholder.source.json', 'reports', 'backups', '.runtime', '.runtime\kirifix.py')) {
+    Assert-LocalPath $root
+    $logDir = Join-Path $root 'logs'
+    Assert-LocalPath $logDir
+    $candidateSupportPath = Join-Path $logDir 'KiriFix-support.txt'
+    Assert-LocalPath $candidateSupportPath
+    $supportPath = $candidateSupportPath
+    foreach ($relative in @('data', 'data\moonholder.json', 'data\moonholder.source.json', 'reports', 'backups', '.runtime', '.runtime\kirifix.py')) {
         Assert-LocalPath (Join-Path $root $relative)
     }
-    $logDir = Join-Path $root 'logs'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     $runId = (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)
     $logPath = Join-Path $logDir ('run-' + $runId + '.log')
@@ -76,24 +112,39 @@ try {
     Get-ChildItem -LiteralPath $logDir -Filter 'run-*.log' -File |
         Sort-Object Name -Descending | Select-Object -Skip 3 |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
-    Write-Host 'KiriFix WWMI 0.3.3'
+    Write-Host 'KiriFix WWMI 0.3.4'
     Write-Host ('Started: ' + (Get-Date -Format o))
     Write-Host ('Log: ' + $logPath)
     $mode = $env:KIRIFIX_MODE
     if ([string]::IsNullOrWhiteSpace($mode)) { $mode = 'run' }
-    if ($mode -notin @('run','scan','rollback','force','update')) { throw 'Supported modes: run, scan, rollback, force, update.' }
+    $mode = $mode.ToLowerInvariant()
+    if ($mode -cnotin @('run','scan','rollback','force','update')) {
+        $support.Add('The requested launch mode is not supported.')
+        throw 'Supported modes: run, scan, rollback, force, update.'
+    }
+    $support.Add('Mode: ' + $mode)
     $mods = $env:KIRIFIX_MODS
-    if ([string]::IsNullOrWhiteSpace($mods)) { $mods = $defaultMods }
+    if ([string]::IsNullOrWhiteSpace($mods)) {
+        $mods = $defaultMods
+        $support.Add('Mods folder source: launcher location.')
+    } else { $support.Add('Mods folder source: supplied folder.') }
+    $support.Add('Checking whether the Mods folder is accessible.')
     if (!(Test-Path -LiteralPath $mods -PathType Container)) {
+        $support.Add('The selected Mods folder does not exist or is not a directory. Drag your Mods folder onto the CMD.')
         throw ('Mods folder not found: ' + $mods + '. Drag your Mods folder onto this CMD file.')
     }
     $mods = (Resolve-Path -LiteralPath $mods).ProviderPath
     $journal = $env:KIRIFIX_JOURNAL
     if ($mode -eq 'rollback' -and ![string]::IsNullOrWhiteSpace($journal)) {
+        $support.Add('Checking the selected rollback journal.')
+        if (!(Test-Path -LiteralPath $journal -PathType Leaf)) {
+            $support.Add('The selected rollback journal could not be found.')
+        }
         $journal = (Resolve-Path -LiteralPath $journal).ProviderPath
     }
     Set-Location -LiteralPath $root
     Write-Host ('Mode: ' + $mode + '; Mods: ' + $mods)
+    $support.Add('Checking Python 3.10 or later.')
     $runtime = $null
     $runtimeArgs = @()
     $candidates = @()
@@ -125,7 +176,11 @@ try {
         } finally { $ErrorActionPreference = 'Stop' }
         if ($probeExit -eq 0) { $runtime = $candidate.Path; $runtimeArgs = @($candidate.Prefix); break }
     }
-    if (!$runtime) { throw 'Python 3.10+ not found. Install from https://www.python.org/downloads/windows/ .' }
+    if (!$runtime) {
+        $support.Add('Python 3.10 or later could not be started.')
+        throw 'Python 3.10+ not found. Install from https://www.python.org/downloads/windows/ .'
+    }
+    $support.Add('Preparing the KiriFix runtime.')
     $runtimeDir = Join-Path $root '.runtime'
     New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
     $pythonPath = Join-Path $runtimeDir 'kirifix.py'
@@ -138,6 +193,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import difflib
+import errno
 import hashlib
 import json
 import os
@@ -153,7 +209,7 @@ import urllib.request
 import urllib.error
 import uuid
 
-VERSION = '0.3.3'
+VERSION = '0.3.4'
 MOONHOLDER_URL = 'https://github.com/Moonholder/Wuwa_Mod_Fixer/releases/download/v3.7.0/wuwa-mod-cli_v3.7.0.exe'
 MOONHOLDER_SHA256 = '737c71507a8bc43a0794cace0aba07bccee6967de95cfb29291c9700cc85a370'
 DATABASE_URL = 'https://raw.githubusercontent.com/Moonholder/Wuwa_Mod_Fixer/main/config.json'
@@ -163,6 +219,7 @@ SECTIONS = re.compile(r'^\[([^\]\r\n]+)\][ \t]*(?:;[^\r\n]*)?\r?\n.*?(?=^\[|\Z)'
 HASH = re.compile(r'^([ \t]*hash[ \t]*=[ \t]*)([0-9a-fA-F]{8})([ \t]*(?:;[^\r\n]*)?)(?=\r?$)', re.M | re.I)
 CHANNELS = {'D': 'Diffuse', 'L': 'Lightmap', 'N': 'Normalmap', 'M': 'Materialmap',
             'C': 'Cutoutmap', 'S': 'Specialmap'}
+ROVER_SHAPE_KEY_CHANGE = 'RoverFemale: update legacy shape key batch offset and dispatch size'
 
 
 @dataclass
@@ -173,6 +230,40 @@ class Plan:
     changes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     path: Path | None = None
+
+
+class PathIssue(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def emit_support(event: str, *counts: int) -> None:
+    print('KIRIFIX_SUPPORT', event, *counts, flush=True)
+
+
+def support_error(exc: Exception) -> str | None:
+    while exc is not None:
+        if isinstance(exc, PathIssue):
+            return exc.code
+        if isinstance(exc, subprocess.TimeoutExpired):
+            return 'timeout'
+        if isinstance(exc, OSError):
+            winerror = getattr(exc, 'winerror', None)
+            if winerror == 206 or exc.errno == errno.ENAMETOOLONG:
+                return 'path-too-long'
+            if winerror in (32, 33):
+                return 'file-in-use'
+            if winerror == 123:
+                return 'invalid-path'
+            if winerror in (39, 112) or exc.errno == errno.ENOSPC:
+                return 'disk-full'
+            if isinstance(exc, PermissionError):
+                return 'access-denied'
+            if isinstance(exc, (FileNotFoundError, NotADirectoryError)):
+                return 'missing-path'
+        exc = exc.__cause__
+    return None
 
 
 def digest(data: bytes) -> str:
@@ -324,6 +415,248 @@ def conditional_outfit_bindings(block, candidates, resources, base, newline):
     return block[:anchor.end()] + newline.join(lines) + newline + block[anchor.end():]
 
 
+def ini_commands(block):
+    return [' '.join(line.split(';', 1)[0].split()) for line in block.splitlines()[1:]
+            if line.split(';', 1)[0].strip()]
+
+
+def texture_asset(resource, resources, base):
+    files = re.findall(r'^[ \t]*filename[ \t]*=[ \t]*([^;\r\n]+)',
+                       resources.get(resource.lower(), ''), re.M | re.I)
+    if base is not None and len(files) == 1:
+        try:
+            path = inside(base, files[0].strip().strip('"').replace('\\', '/'))
+            if path.is_file():
+                return path
+        except ValueError:
+            pass
+    return None
+
+
+def texture_choices(commands, target):
+    """Accept resource selectors with variable-only conditions and no other effects."""
+    condition = r'\$\w+(?:\s*(?:==|!=)\s*-?\d+)?'
+    branch = re.compile(rf'(if|elif|else if) {condition}(?:\s*(?:\|\||&&)\s*{condition})*', re.I)
+    assignment = re.compile(rf'{re.escape(target)}\s*=\s*(?:ref\s+)?(Resource[\w-]+)', re.I)
+    stack, result = [], []
+    for line in commands:
+        control = branch.fullmatch(line)
+        resource = assignment.fullmatch(line)
+        if control and control[1].lower() == 'if':
+            result.append((len(stack), line, None))
+            stack.append(False)
+        elif control or line.lower() == 'else':
+            if not stack or stack[-1]:
+                return None
+            stack[-1] = line.lower() == 'else'
+            result.append((len(stack) - 1, line, None))
+        elif line.lower() == 'endif':
+            if not stack:
+                return None
+            stack.pop()
+            result.append((len(stack), 'endif', None))
+        elif resource:
+            result.append((len(stack), '', resource[1]))
+        else:
+            return None
+    if not stack and any(resource for _, _, resource in result):
+        return tuple(result)
+    return None
+
+
+def texture_profile(condition):
+    """Map slots only for the two recognized hair and outfit layouts."""
+    formats = {}
+    for group in condition.split('&&'):
+        group = group.strip()
+        grouped = group.startswith('(') and group.endswith(')')
+        alternatives = (group[1:-1] if grouped else group).split('||')
+        probes = [re.fullmatch(r'ps-t(\d+)->format\s*==\s*dxgi_format_(\w+)', item.strip(), re.I)
+                  for item in alternatives]
+        if (any(probe is None for probe in probes) or (len(probes) > 1 and not grouped)
+                or len({int(probe[1]) for probe in probes}) != 1 or int(probes[0][1]) in formats):
+            return {}
+        formats[int(probes[0][1])] = {probe[2].lower() for probe in probes}
+    bc7 = {'bc7_unorm', 'bc7_unorm_srgb'}
+    bc3 = {'bc3_unorm', 'bc3_unorm_srgb'}
+    if (formats.get(0, set()) and formats[0] <= bc7 and formats.get(1) == {'bc3_unorm'}
+            and formats.get(2) == {'r8_unorm'} and formats.get(3) == {'bc7_unorm_srgb'}
+            and formats.get(4) == {'bc7_unorm_srgb'}):
+        return {0: 'Normalmap', 1: 'Lightmap', 2: 'Materialmap', 3: 'Diffuse', 4: None}
+    if (formats.get(0, set()) and formats[0] <= bc3 and formats.get(1) == {'bc7_unorm_srgb'}
+            and formats.get(2) == {'b8g8r8a8_unorm'} and formats.get(5, set())
+            and formats[5] <= bc7):
+        return {0: 'Lightmap', 1: 'Diffuse', 5: 'Materialmap'}
+    return {}
+
+
+def slot_texture_choices(block, sections, resources, base):
+    commands = ini_commands(block)
+    if (len(commands) < 5 or commands[0].lower() != 'if $object_detected == 1'
+            or [line.lower() for line in commands[-2:]] != ['endif', 'endif']):
+        return None
+    branches = []
+    for line in commands[1:-2]:
+        condition = re.fullmatch(r'(else if|elif|if) (.+)', line, re.I)
+        if condition:
+            if (condition[1].lower() == 'if') != (not branches):
+                return None
+            branches.append((condition[2], []))
+        elif branches:
+            branches[-1][1].append(line)
+        else:
+            return None
+    if not branches:
+        return None
+    primary, layout = {}, None
+    fallback = []
+    for condition, body in branches:
+        profile = texture_profile(condition)
+        choices = {}
+        cursor = 0
+        while cursor < len(body):
+            direct = re.fullmatch(r'ps-t(\d+) = ref (Resource[\w-]+)', body[cursor], re.I)
+            temporary = re.fullmatch(r'(Resource\w+) = ref ps-t(\d+)', body[cursor], re.I)
+            if temporary and cursor + 3 < len(body):
+                name, slot = temporary.groups()
+                call = re.fullmatch(r'run = (CommandList[\w-]+)', body[cursor + 1], re.I)
+                if not call or [line.lower() for line in body[cursor + 2:cursor + 4]] != [
+                    f'ps-t{slot} = ref {name}'.lower(), f'{name} = null'.lower()
+                ]:
+                    return None
+                selector = ini_commands(sections.get(call[1].lower(), ''))
+                selected = None
+                if (selector and selector[0].lower() in ('if $object_detected', 'if $object_detected == 1')
+                        and selector[-1].lower() == 'endif'):
+                    selected = texture_choices(selector[1:-1], name)
+                if selected is None:
+                    selected = texture_choices(selector, name)
+                cursor += 4
+            elif direct:
+                slot, resource = direct.groups()
+                selected = ((0, '', resource),)
+                cursor += 1
+            else:
+                return None
+            slot = int(slot)
+            if (not selected or slot in choices
+                    or any(not texture_asset(resource, resources, base)
+                           for _, _, resource in selected if resource)):
+                return None
+            choices[slot] = selected
+        if not choices or not choices.keys() <= profile.keys():
+            simple = re.fullmatch(r'ps-t(\d+)->format == dxgi_format_bc7_unorm(?:_srgb)?', condition, re.I)
+            either = re.fullmatch(r'\(ps-t(\d+)->format == dxgi_format_bc7_unorm'
+                                  r' \|\| ps-t\1->format == dxgi_format_bc7_unorm_srgb\)', condition, re.I)
+            diffuse_fallback = simple or either
+            if diffuse_fallback and choices.keys() == {int(diffuse_fallback[1])}:
+                fallback.append(choices)
+                continue
+            return None
+        if primary and (layout != profile or primary != choices):
+            return None
+        primary, layout = choices, profile
+    if not primary:
+        return None
+    diffuse_slot = next(slot for slot, channel in layout.items() if channel == 'Diffuse')
+    if any(next(iter(branch.values())) != primary.get(diffuse_slot) for branch in fallback):
+        return None
+    return {layout[slot]: choices for slot, choices in primary.items()}
+
+
+def hash_covers_slot_choices(choices, candidates, hash_overrides, textures, resources, base, component_id):
+    for channel, selector in choices.items():
+        options = candidates.get(channel, [])
+        if channel is None:
+            # Shared, auxiliary textures may have no channel metadata. Require
+            # the export's component list and the matching resource hash.
+            if len(selector) != 1:
+                return False
+            resource = selector[0][2]
+            path = texture_asset(resource, resources, base)
+            label = re.fullmatch(r'Components-([\d-]+) t=([a-f0-9]{8})', path.stem, re.I)
+            if not label or str(component_id) not in label[1].split('-'):
+                return False
+            options = hash_overrides.get(label[2].lower(), [])
+        for override in options:
+            hash_value = HASH.search(override)[2].lower()
+            derived = textures.get(hash_value, {}).get('derive', {})
+            if not isinstance(derived, dict):
+                continue
+            required = [hash_value, *(alias.lower() for aliases in derived.values()
+                                      if isinstance(aliases, list) for alias in aliases if isinstance(alias, str))]
+            for value in required:
+                matches = hash_overrides.get(value, [])
+                if len(matches) != 1:
+                    break
+                commands = [line for line in ini_commands(matches[0])
+                            if not re.match(r'^(hash|match_priority)\s*=', line, re.I)]
+                if (not commands or commands[0].lower() != 'if $object_detected'
+                        or commands[-1].lower() != 'endif' or texture_choices(commands[1:-1], 'this') != selector):
+                    break
+            else:
+                break
+        else:
+            return False
+    return True
+
+
+def repair_slot_bindings(block, component_id, sections, resources, base, rabbit, candidates, hash_overrides, textures, newline):
+    calls = list(re.finditer(
+        rf'^([ \t]*)(;[ \t]*)?run[ \t]*=[ \t]*(CommandListSetTexturesComponent{component_id})[ \t]*\r?$\n',
+        block, re.M | re.I))
+    if len(calls) != 1 or calls[0][2]:
+        return block
+    call = calls[0]
+    indent = call[1]
+    choices = slot_texture_choices(sections.get(call[3].lower(), ''), sections, resources, base)
+    commands = ini_commands(block)
+    trigger = 'run = CommandListTriggerResourceOverrides'
+    shared = 'run = CommandListOverrideSharedResources'
+    first_draw = re.search(r'^[ \t]*drawindexed\s*=', block, re.M | re.I)
+    if (not choices or 'Diffuse' not in choices or commands.count(trigger) != 1 or commands.count(shared) != 1
+            or '$object_detected = 1' not in commands[:commands.index(trigger)]
+            or not block[call.end():].startswith(indent + trigger + newline + indent + shared + newline)
+            or not first_draw or first_draw.start() < call.end()):
+        return block
+    rabbit_run = 'run = CommandList\\RabbitFX\\Run'
+    fx_map = re.compile(r'Resource\\RabbitFX\\FXMap = ref Resource[\w-]+', re.I)
+    rabbit_commands = [line for line in commands if 'rabbitfx' in line.lower()]
+    existing_fx = len(rabbit_commands) == 2 and fx_map.fullmatch(rabbit_commands[0]) and rabbit_commands[1] == rabbit_run
+    if rabbit_commands and not existing_fx:
+        return block
+    if existing_fx:
+        anchor = indent + rabbit_run + newline
+        fx_prefix = ini_commands('[Component]' + newline + block[call.end():first_draw.start()])
+        if block.count(anchor) != 1 or fx_prefix[:4] != [trigger, shared, *rabbit_commands]:
+            return block
+    probes = ini_commands(sections.get('commandlisttriggerresourceoverrides', ''))
+    if (not existing_fx and {'Diffuse', 'Lightmap', 'Normalmap', 'Materialmap'} <= choices.keys()
+            and {f'CheckTextureOverride = ps-t{i}' for i in range(5)} <= set(probes)
+            and hash_covers_slot_choices(choices, candidates, hash_overrides, textures, resources, base, component_id)):
+        return block[:call.start()] + indent + '; ' + block[call.start() + len(indent):]
+    if not rabbit or None in choices or any(candidates.values()):
+        return block
+    single_channel = len(choices) == 1
+    lines = [] if existing_fx or single_channel else [indent + rabbit_run]
+    for channel, selector in choices.items():
+        for depth, command, resource in selector:
+            prefix = indent + '    ' * depth
+            assignment = f'Resource\\RabbitFX\\{channel} = ref {resource}' if resource else command
+            if single_channel and resource and not existing_fx:
+                lines.append(prefix + rabbit_run)
+            lines.append(prefix + assignment)
+            if single_channel and resource:
+                lines.append(prefix + 'run = CommandList\\RabbitFX\\SetTextures')
+    if not single_channel:
+        lines.append(indent + 'run = CommandList\\RabbitFX\\SetTextures')
+    insertion = newline.join(lines) + newline
+    updated = block[:call.start()] + block[call.end():]
+    if existing_fx:
+        return updated.replace(anchor, anchor + insertion)
+    return updated[:call.start()] + insertion + updated[call.start():]
+
+
 
 def repair_rover_shape_keys(text: str, sections: list[re.Match]) -> str:
     signature = {
@@ -366,7 +699,7 @@ def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None,
     text, encoding = decode(data)
     p = Plan(data, data)
     sections = list(SECTIONS.finditer(text))
-    names = [m.group(1).lower() for m in sections]
+    names = [m.group(1).lower() for m in sections if m.group(1).lower() not in ('constants', 'present')]
     if len(names) != len(set(names)):
         p.warnings.append('Duplicate section names; file skipped')
         return p
@@ -394,6 +727,8 @@ def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None,
     bindings: dict[int, dict[str, set[str]]] = {}
     ambiguous: set[tuple[int, str]] = set()
     texture_overrides: dict[int, dict[str, list[str]]] = {}
+    named_sections = {m.group(1).lower(): m.group() for m in sections}
+    hash_overrides = {}
 
     def override(block: str) -> str:
         name = section_name(block)
@@ -404,6 +739,8 @@ def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None,
             return block
         old = hm[0].group(2).lower()
         new = replace.get(old, old)
+        if new == old:
+            hash_overrides.setdefault(old, []).append(block)
         if new not in textures:
             return block
         node = textures[new]
@@ -449,6 +786,15 @@ def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None,
         i = int(match.group(1))
         if i in cfg.get('skip_components', []):
             return block
+        if re.search(r'^[ \t]*(?:;[ \t]*)?run[ \t]*=[ \t]*CommandListSetTexturesComponent\d+\b', block, re.M | re.I):
+            current = {channel: [item for item in items if HASH.search(item).group(2).lower() not in replace]
+                       for channel, items in texture_overrides.get(i, {}).items()}
+            fixed = repair_slot_bindings(block, i, named_sections, resources, base, rabbit,
+                                         current, hash_overrides, textures, newline)
+            if fixed != block:
+                method = 'retain hash overrides' if '; run' in fixed else 'route slot textures through RabbitFX'
+                p.changes.append(f'Component{i}: {method}')
+            return fixed
         if rabbit and not re.search(r'RabbitFX', block, re.I):
             outfit = conditional_outfit_bindings(block, texture_overrides.get(i, {}), resources, base, newline)
             if outfit is not None:
@@ -488,7 +834,7 @@ def plan_bytes(data: bytes, db: dict, rabbit: bool, base: Path | None = None,
     if after_moonholder and p.character == 'RoverFemale' and hashes == {'b7b6abd9'}:
         repaired = repair_rover_shape_keys(text, list(SECTIONS.finditer(text)))
         if repaired != text:
-            p.changes.append('RoverFemale: update legacy shape key batch offset and dispatch size')
+            p.changes.append(ROVER_SHAPE_KEY_CHANGE)
             text = repaired
     p.after = text.encode(encoding)
     
@@ -507,15 +853,16 @@ def is_link(path: Path) -> bool:
 def inside(root: Path, relative: str) -> Path:
     root = root.resolve()
     rel = Path(relative)
-    if rel.is_absolute() or '..' in rel.parts or rel.drive or ':' in relative:
-        raise ValueError(f'Unsafe relative path: {relative}')
+    if rel.is_absolute() or '..' in rel.parts or rel.drive or ':' in relative or '\x00' in relative:
+        code = 'outside-mods' if '..' in rel.parts or rel.is_absolute() else 'invalid-path'
+        raise PathIssue(code, f'Unsafe relative path: {relative}')
     path = root
     for part in rel.parts:
         path = path / part
         if path.exists() and is_link(path):
-            raise ValueError(f'Links/reparse points are not supported: {path}')
+            raise PathIssue('linked-path', f'Links/reparse points are not supported: {path}')
     if not path.resolve().is_relative_to(root):
-        raise ValueError('Path escapes root')
+        raise PathIssue('outside-mods', 'Path escapes root')
     return path
 
 
@@ -759,6 +1106,7 @@ def report(plans: list[Plan], root: Path, db_bytes: bytes, db: dict, destination
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='KiriFix WWMI: known texture fixes, backups and rollback')
     parser.add_argument('--version', action='version', version=VERSION)
+    parser.add_argument('--support-events', action='store_true', help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest='command', required=True)
     up = sub.add_parser('update-db', help='Explicitly download official JSON database (no programs)')
     up.add_argument('--database', type=Path, default=Path('data/moonholder.json'))
@@ -792,9 +1140,18 @@ def main(argv=None) -> int:
                 rollback(args.mods, args.journal)
             print('Rollback verified.')
             return 0
+        if args.support_events:
+            emit_support('check-mods')
         root = args.mods.resolve(strict=True)
+        # os.walk ignores an inaccessible root by default.
+        with os.scandir(root):
+            pass
         if not has_wwmi_components(root):
+            if args.support_events:
+                emit_support('no-mods')
             return location_warning()
+        if args.support_events:
+            emit_support('database')
         if args.command in ('run', 'full-run'):
             print(f'Automatic run. Mods: {root}', flush=True)
             if args.command == 'full-run':
@@ -823,7 +1180,7 @@ def main(argv=None) -> int:
         validate_database(db)
         print(f'Database version: {db.get("version", {}).get("current_version")}; SHA256: {digest(raw)}', flush=True)
         if args.command == 'full-run':
-            full_run(root, args.database, args.state, args.reports, force=args.force)
+            full_run(root, args.database, args.state, args.reports, force=args.force, support=args.support_events)
             return 0
         if args.command == 'apply':
             if not args.yes:
@@ -835,6 +1192,8 @@ def main(argv=None) -> int:
                 raise ValueError(f'Game/database version mismatch: {args.game_version} vs {version}; no writes')
         plans = scan(root, db)
         if not any(p.character is not None for p in plans):
+            if args.support_events:
+                emit_support('no-mods')
             return location_warning()
         for p in plans:
             print(f'[{p.character or "unrecognized"}] {p.path.relative_to(root)}', flush=True)
@@ -846,6 +1205,8 @@ def main(argv=None) -> int:
         report(plans, root, raw, db, destination)
         changed = sum(p.before != p.after for p in plans)
         warnings = sum(len(p.warnings) for p in plans)
+        if args.support_events:
+            emit_support('scanned', len(plans), changed, warnings)
         print(f'Scanned: {len(plans)} INI; proposed changes: {changed}; warnings: {warnings}')
         print(f'Report: {destination / "report.json"}\nDiff: {destination / "changes.diff"}')
         if args.command in ('apply', 'run') and changed:
@@ -857,6 +1218,8 @@ def main(argv=None) -> int:
             print('No automatic changes needed; inspect warnings above.')
         return 0
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        if args.support_events and (code := support_error(exc)):
+            emit_support(code)
         print(f'ERROR: {exc}', file=sys.stderr)
         return 2
 
@@ -933,9 +1296,16 @@ def prepare_stage(root: Path, stage: Path, skipped: list | None = None, selected
             paths = [path]
             for value in re.findall(r'^[ \t]*filename[ \t]*=[ \t]*([^\r\n]+)', text, re.M | re.I):
                 resource = path.parent / value.strip()
-                relative = resource.relative_to(root).as_posix()
+                try:
+                    relative = resource.relative_to(root).as_posix()
+                except ValueError as exc:
+                    raise PathIssue('outside-mods', str(exc)) from exc
                 resource = inside(root, relative)
-                if not resource.is_file():
+                try:
+                    is_file = stat.S_ISREG(resource.stat().st_mode)
+                except (FileNotFoundError, NotADirectoryError):
+                    is_file = False
+                if not is_file:
                     missing.append(relative)
                 else:
                     paths.append(resource)
@@ -1160,7 +1530,8 @@ def global_rules(db: dict) -> str:
     return rules_digest(common)
 
 
-def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool = False) -> None:
+def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool = False,
+             *, support: bool = False) -> None:
     started = time.monotonic()
     raw = database.read_bytes()
     db = json.loads(raw)
@@ -1168,7 +1539,7 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         inventory, rabbits = fast_inventory(root)
         rules = mod_rule_signatures(root, db, inventory)
     cache_path = database.resolve().parent / 'processed-mods.json'
-    context = {'root': str(root.resolve()), 'logic': 'full-repair-v7', 'global_rules': global_rules(db),
+    context = {'root': str(root.resolve()), 'logic': 'full-repair-v8', 'global_rules': global_rules(db),
                'moonholder': MOONHOLDER_SHA256,
                'rabbitfx': {name: inventory[name] for name in sorted(rabbits)}}
     cached = {}
@@ -1190,6 +1561,11 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
     dirty = {name for name, signature in inventory.items()
              if not isinstance(cached.get(name), dict) or cached[name].get('files') != signature
              or cached[name].get('rules') != rules[name]}
+    if support:
+        emit_support('inventory', len(inventory) - len(dirty), len(dirty))
+        cached_skips = sum(bool(cached[name].get('skipped')) for name in inventory.keys() - dirty)
+        if cached_skips:
+            emit_support('missing-resources', cached_skips)
     print(f'CACHE: {len(inventory) - len(dirty)}/{len(inventory)} mod folders unchanged; {len(dirty)} require processing.', flush=True)
     for name in sorted(inventory.keys() - dirty):
         if cached[name].get('skipped'):
@@ -1199,6 +1575,8 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         print(f'FAST RUN: No changed mods or repair rules. Nothing copied or modified. Total: {time.monotonic() - started:.2f}s', flush=True)
         return
     runtime = database.resolve().parent.parent / '.runtime'
+    if support:
+        emit_support('moonholder-setup')
     with activity('Checking/downloading Moonholder CLI'):
         executable = moonholder_cli(runtime)
     destination = reports.resolve() / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8])
@@ -1207,28 +1585,44 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         stage = Path(temporary) / 'Mods'
         stage.mkdir()
         skipped = []
+        if support:
+            emit_support('staging')
         with activity('1/4 Copying mod resources and verifying checksums; originals unchanged'):
             try:
                 originals = prepare_stage(root, stage, skipped, selected=dirty | rabbits)
             finally:
+                if support and skipped:
+                    emit_support('missing-resources', len(skipped))
                 save_json(destination / 'skipped-mods.json', skipped)
         config = Path(temporary) / 'config.json'
         config.write_bytes(raw)
         print(f'Moonholder stage: {len(originals)} input files copied. Originals remain untouched.', flush=True)
+        if support:
+            emit_support('moonholder')
         with activity('2/4 Moonholder model and bone repair on temporary copies'):
             returncode, events = run_moonholder(
                 [str(executable), '--path', str(stage), '--config', str(config), '--format', 'json'],
                 temporary, destination)
         finishes = [e for e in events if isinstance(e, dict) and e.get('event') == 'finish']
         if returncode or not finishes or not finishes[-1].get('success') or finishes[-1].get('summary', {}).get('failure_count', 0):
+            if support:
+                emit_support('moonholder-failed')
             raise ValueError(f'Moonholder repair failed; originals unchanged. Details: {destination}')
         print('Moonholder stage verified. Running RabbitFX texture stage...', flush=True)
+        if support:
+            emit_support('textures')
         with activity('3/4 Texture and shape key processing on temporary copies'):
             plans = scan(stage, db, after_moonholder=True)
+            if support:
+                emit_support('scanned', len(plans), sum(p.after != p.before for p in plans),
+                             sum(len(p.warnings) for p in plans))
+                emit_support('rover-eyes', sum(ROVER_SHAPE_KEY_CHANGE in p.changes for p in plans))
             report(plans, stage, raw, db, destination / 'textures')
             for p in plans:
                 if p.after != p.before:
                     atomic_write(p.path, p.after)
+        if support:
+            emit_support('applying')
         with activity('4/4 Validating originals, saving backups and applying changes'):
             journal = commit_full(root, stage, originals, state)
         save_json(destination / 'full-report.json', {'tool': VERSION, 'root': str(root),
@@ -1242,6 +1636,8 @@ def full_run(root: Path, database: Path, state: Path, reports: Path, force: bool
         changed_paths = set()
         if journal:
             changed_paths = {e['path'] for e in json.loads(journal.read_bytes())['entries']}
+        if support:
+            emit_support('applied', len(changed_paths))
         for name in inventory:
             old_unwritten = {p: v for p, v in inventory[name].items() if p not in changed_paths}
             new_unwritten = {p: v for p, v in current.get(name, {}).items() if p not in changed_paths}
@@ -1266,29 +1662,61 @@ if __name__ == '__main__':
     [IO.File]::WriteAllText($pythonPath, $pythonSource, [Text.UTF8Encoding]::new($false))
     $helperMode = $mode
     if ($mode -in @('run','force','update')) { $helperMode = 'full-run' }
-    $arguments = $runtimeArgs + @('-I','-X','utf8','-u',$pythonPath,$helperMode,$mods)
+    $arguments = $runtimeArgs + @('-I','-X','utf8','-u',$pythonPath,'--support-events',$helperMode,$mods)
     if ($mode -eq 'force') { $arguments += '--force' }
     if ($mode -eq 'update') { $arguments += '--refresh-db' }
     if ($mode -eq 'rollback') {
-        if ([string]::IsNullOrWhiteSpace($env:KIRIFIX_JOURNAL)) { throw 'Rollback requires journal path as third argument.' }
+        if ([string]::IsNullOrWhiteSpace($env:KIRIFIX_JOURNAL)) {
+            $support.Add('Rollback requires a journal file.')
+            throw 'Rollback requires journal path as third argument.'
+        }
         $arguments += $journal
     }
     Write-Host ('Python: ' + $runtime)
     $ErrorActionPreference = 'Continue'
     & $runtime @arguments 2>&1 | ForEach-Object {
-        if ($_.ToString().StartsWith('WARNING:')) { Write-Host $_.ToString() -ForegroundColor Yellow }
-        else { Write-Host $_.ToString() }
+        $line = $_.ToString()
+        if ($line.StartsWith('KIRIFIX_SUPPORT ')) { Add-HelperSupport $line }
+        elseif ($line.StartsWith('WARNING:')) { Write-Host $line -ForegroundColor Yellow }
+        else { Write-Host $line }
     }
     $exitCode = $LASTEXITCODE
     $ErrorActionPreference = 'Stop'
-    if ($exitCode -eq 3) {
-        if (![Console]::IsInputRedirected) { Read-Host 'Press Enter to close' | Out-Null }
-    } elseif ($exitCode -ne 0) { Write-Host ('ERROR: helper exited with code ' + $exitCode) -ForegroundColor Red }
+    if ($exitCode -ne 0 -and $exitCode -ne 3) { Write-Host ('ERROR: helper exited with code ' + $exitCode) -ForegroundColor Red }
 } catch {
     $exitCode = 2
+    for ($exception = $_.Exception; $null -ne $exception; $exception = $exception.InnerException) {
+        if ($exception -is [IO.PathTooLongException]) {
+            $support.Add('A file path is too long. Use a less deeply nested Mods folder.')
+            break
+        }
+        if ($exception -is [UnauthorizedAccessException] -or $exception -is [Security.SecurityException]) {
+            $support.Add('Access to a required file or folder was denied.')
+            break
+        }
+    }
     Write-Host ('ERROR: ' + $_.Exception.Message) -ForegroundColor Red
     Write-Host $_.ScriptStackTrace
 } finally {
+    if ($supportPath) {
+        switch ($exitCode) {
+            0 { $support.Add('Result: completed.') }
+            3 { $support.Add('Result: no supported WWMI mods detected.') }
+            default { $support.Add('Result: stopped with an error.') }
+        }
+        $support.Add('Exit code: ' + $exitCode)
+        $pendingSupport = $supportPath + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+        try {
+            [IO.File]::WriteAllLines($pendingSupport, $support, [Text.UTF8Encoding]::new($false))
+            if ([IO.File]::Exists($supportPath)) { [IO.File]::Replace($pendingSupport, $supportPath, [NullString]::Value) }
+            else { [IO.File]::Move($pendingSupport, $supportPath) }
+            Write-Host 'For support, share KiriFix-WWMI\logs\KiriFix-support.txt.'
+        } catch {
+            Write-Host 'WARNING: Could not save the shareable report.' -ForegroundColor Yellow
+        } finally {
+            if ([IO.File]::Exists($pendingSupport)) { Remove-Item -LiteralPath $pendingSupport -ErrorAction SilentlyContinue }
+        }
+    }
     Write-Host ('Finished: ' + (Get-Date -Format o) + '; exit code: ' + $exitCode)
     if ($transcriptStarted) {
         Write-Host ('Saved log: ' + $logPath)
@@ -1298,4 +1726,5 @@ if __name__ == '__main__':
     if ($null -ne $runLock) { $runLock.Dispose() }
     [Console]::OutputEncoding = $previousOutputEncoding
 }
+if ($exitCode -eq 3 -and ![Console]::IsInputRedirected) { Read-Host 'Press Enter to close' | Out-Null }
 exit $exitCode

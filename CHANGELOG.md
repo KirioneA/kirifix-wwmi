@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4 — Legacy texture compatibility and shareable support logs
+
+- Repair recognized legacy hair and outfit texture layouts while preserving supported outfit toggles.
+- Save a shareable summary of the latest run to `logs/KiriFix-support.txt`, with repair counts and neutral path errors.
+- Keep Windows account and computer names, local paths, mod names and raw error output out of the shareable summary.
+
 ## 0.3.3 — Rover eye and conditional texture repairs
 
 - Repair legacy female Rover eye shape keys after Moonholder when the batch signature matches.

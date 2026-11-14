@@ -30,13 +30,47 @@ class LauncherSecurityTests(unittest.TestCase):
             'version': {'current_version': '3.7.1'}}))
         (self.mods / 'mod.ini').write_text('[TextureOverrideComponent0]\nhash = 11111111\n')
 
-    def launch(self, prefix=''):
+    def launch(self, prefix='', mods=None):
         env = os.environ.copy()
         env['TEST_HELPER'] = str(self.cmd)
-        env['TEST_MODS'] = str(self.mods)
+        env['TEST_MODS'] = str(self.mods if mods is None else mods)
         return subprocess.run(['powershell.exe', '-NoProfile', '-Command',
                                prefix + '& $env:TEST_HELPER $env:TEST_MODS scan; exit $LASTEXITCODE'],
                               env=env, capture_output=True, text=True, encoding='utf-8', timeout=40)
+
+    def support_text(self):
+        self.assertFalse((self.service / 'KiriFix-support.txt').exists())
+        report = (self.service / 'logs/KiriFix-support.txt').read_text(encoding='utf-8')
+        self.assertNotIn(str(self.folder), report)
+        for key in ('USERNAME', 'COMPUTERNAME'):
+            if os.environ.get(key):
+                self.assertNotIn(os.environ[key].casefold(), report.casefold())
+        self.assertNotRegex(report, r'[A-Za-z]:[\\/]|\\\\')
+        return report
+
+    def test_support_report_omits_mod_names_and_replaces_previous_run(self):
+        mod = self.mods / 'Private Name - \u041c\u043e\u0434'
+        mod.mkdir()
+        (self.mods / 'mod.ini').rename(mod / 'private-config.ini')
+        logs = self.service / 'logs'
+        logs.mkdir()
+        (logs / 'KiriFix-support.txt').write_text('Stale private data')
+        result = self.launch()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(r'For support, share KiriFix-WWMI\logs\KiriFix-support.txt.', result.stdout)
+        report = self.support_text()
+        for private in (mod.name, 'private-config.ini', 'Stale private data'):
+            self.assertNotIn(private, report)
+        self.assertIn('Scanned 1 INI', report)
+        self.assertIn('Exit code: 0', report)
+
+    def test_support_report_describes_missing_folder(self):
+        result = self.launch(mods=self.folder / 'Private Missing Mods')
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        report = self.support_text()
+        self.assertNotIn('Private Missing Mods', report)
+        self.assertIn('The selected Mods folder does not exist or is not a directory.', report)
+        self.assertIn('Exit code: 2', report)
 
     def test_local_python_module_cannot_execute(self):
         runtime = self.service / '.runtime'
@@ -109,3 +143,6 @@ class LauncherSecurityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
         self.assertIn('WARNING: WWMI mods were not detected', result.stdout)
         self.assertFalse((self.service / 'reports').exists())
+        report = self.support_text()
+        self.assertIn('No compatible WWMI mods were detected in the selected folder.', report)
+        self.assertIn('Exit code: 3', report)

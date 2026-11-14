@@ -245,6 +245,32 @@ class FullRepairTests(unittest.TestCase):
         self.assertEqual(result, 0)
         run.assert_called_once()
 
+    def test_support_events_describe_missing_and_external_resources(self):
+        database = self.base / 'data/database.json'
+        database.parent.mkdir()
+        database.write_text(json.dumps({'characters': {'Test': {'main_hashes': [{'new': '11111111'}]}}}))
+        (self.base / '.runtime').mkdir()
+        private = self.root / 'Private Folder'
+        private.mkdir()
+        config = private / 'Private File.ini'
+        (self.root / 'mod.ini').rename(config)
+        args = ['--support-events', 'full-run', str(self.root), '--database', str(database),
+                '--reports', str(self.base / 'reports')]
+
+        for reference, expected in [('Private Texture.dds', 'missing-resources 1'),
+                                    ('../../Private Texture.dds', 'outside-mods')]:
+            with self.subTest(reference=reference):
+                config.write_text(f'[TextureOverrideComponent0]\nhash = 11111111\n[Resource]\nfilename = {reference}\n')
+                output = io.StringIO()
+                with patch.object(h, 'check_database'), patch.object(h, 'moonholder_cli', return_value=self.base / 'cli.exe'), \
+                     contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+                    result = h.main(args)
+                events = [line for line in output.getvalue().splitlines() if line.startswith('KIRIFIX_SUPPORT ')]
+                self.assertEqual(result, 2)
+                self.assertIn(f'KIRIFIX_SUPPORT {expected}', events)
+                self.assertNotIn('Private', '\n'.join(events))
+                self.assertNotIn(str(self.base), '\n'.join(events))
+
     def test_changed_character_rules_only_stage_affected_character(self):
         (self.root / 'mod.ini').unlink()
         for name, value in [('A', '11111111'), ('B', '22222222')]:
